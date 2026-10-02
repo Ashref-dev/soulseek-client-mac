@@ -1,0 +1,100 @@
+import Foundation
+import Network
+
+public final class TCPConnection: @unchecked Sendable {
+    private let connection: NWConnection
+    private let queue = DispatchQueue(label: "tn.ashref.arpeggio.tcp")
+    public init(host: String, port: UInt16) throws {
+        guard let endpointPort = NWEndpoint.Port(rawValue: port) else { throw ProtocolError.invalid("Invalid port.") }
+        connection = NWConnection(host: NWEndpoint.Host(host), port: endpointPort, using: .tcp)
+    }
+    public init(incoming: NWConnection) { connection = incoming }
+    public var remoteHost: String? {
+        guard case .hostPort(let host, _) = connection.endpoint else { return nil }
+        switch host {
+        case .ipv4(let address): return address.debugDescription
+        case .ipv6(let address): return address.debugDescription
+        default: return nil
+        }
+    }
+    public func start() async throws {
+        let timeout = Task {
+            do { try await Task.sleep(for: .seconds(15)); self.cancel() } catch { }
+        }
+        defer { timeout.cancel() }
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                connection.stateUpdateHandler = { [connection] state in
+                    switch state {
+                    case .ready:
+                        connection.stateUpdateHandler = nil
+                        continuation.resume()
+                    case .failed(let error):
+                        connection.stateUpdateHandler = nil
+                        continuation.resume(throwing: error)
+                    case .waiting(let error):
+                        connection.stateUpdateHandler = nil; connection.cancel()
+                        continuation.resume(throwing: error)
+                    case .cancelled:
+                        connection.stateUpdateHandler = nil
+                        continuation.resume(throwing: ProtocolError.disconnected)
+                    default: break
+                    }
+                }
+                connection.start(queue: queue)
+            }
+        } onCancel: { self.cancel() }
+    }
+    public func send(_ data: Data) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            connection.send(content: data, completion: .contentProcessed { error in
+                if let error { continuation.resume(throwing: error) } else { continuation.resume() }
+            })
+        }
+    }
+    public func receive(maximum: Int = 65_536, timeout seconds: Int? = nil) async throws -> Data {
+        let timeout = seconds.map { seconds in
+            Task { do { try await Task.sleep(for: .seconds(seconds)); self.cancel() } catch { } }
+        }
+        defer { timeout?.cancel() }
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                connection.receive(minimumIncompleteLength: 1, maximumLength: maximum) { data, _, complete, error in
+                    if let data, !data.isEmpty { continuation.resume(returning: data) }
+                    else if let error { continuation.resume(throwing: error) }
+                    else if complete { continuation.resume(throwing: ProtocolError.disconnected) }
+                    else { continuation.resume(returning: Data()) }
+                }
+            }
+        } onCancel: { self.cancel() }
+    }
+    public func cancel() { connection.cancel() }
+}
+
+public actor FramedConnection {
+    public nonisolated let socket: TCPConnection
+    private var buffer = Data()
+    public init(_ socket: TCPConnection) { self.socket = socket }
+    public func send(code: UInt32, payload: Data = Data(), narrow: Bool = false) async throws {
+        try await socket.send(WireWriter.frame(code: code, payload: payload, narrow: narrow))
+    }
+    public func read(narrow: Bool = false, timeout: Int? = nil, peer: Bool = false) async throws -> (UInt32, Data) {
+        let header = try await exact(4, timeout: timeout)
+        var reader = WireReader(header)
+        let length = try reader.uint()
+        let width = narrow ? 1 : 4
+        guard length >= width, length <= 32 * 1024 * 1024 else { throw ProtocolError.oversized }
+        var codeReader = WireReader(try await exact(width, timeout: timeout))
+        let code = try narrow ? UInt32(codeReader.byte()) : codeReader.uint()
+        let payloadLength = Int(length) - width
+        if narrow, payloadLength > 8192 { throw ProtocolError.oversized }
+        if peer, ![5, 9, 16, 37].contains(code), payloadLength > 8192 { throw ProtocolError.oversized }
+        return (code, try await exact(payloadLength, timeout: timeout))
+    }
+    public func exact(_ count: Int, timeout: Int? = nil) async throws -> Data {
+        guard count >= 0, count <= 32 * 1024 * 1024 else { throw ProtocolError.oversized }
+        while buffer.count < count { buffer.append(try await socket.receive(timeout: timeout)) }
+        let result = Data(buffer.prefix(count))
+        buffer.removeFirst(count); return result
+    }
+}
