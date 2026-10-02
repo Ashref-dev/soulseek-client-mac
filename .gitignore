@@ -1,0 +1,16 @@
+.build/
+.swiftpm/
+dist/
+.DS_Store
+*.xcuserstate
+xcuserdata/
+.debug-journal.md
+.codegraph/
+.codegraph
+.omo/
+.env
+.env.*
+*.sqlite
+*.sqlite-*
+*.log
+docs/evidence/*.png
