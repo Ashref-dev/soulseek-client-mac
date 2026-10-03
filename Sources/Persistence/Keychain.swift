@@ -1,18 +1,25 @@
 import Foundation
 import Security
+import LocalAuthentication
 
 public enum Keychain {
     public static func password(for user: String) throws -> String? {
-        var query = base(user)
-        query[kSecReturnData as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        let query = lookupQuery(user)
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
-        if status == errSecItemNotFound { return nil }
+        if status == errSecItemNotFound || status == errSecInteractionNotAllowed { return nil }
         guard status == errSecSuccess, let data = result as? Data else {
             throw StorageError.sqlite("Keychain access failed (\(status)).")
         }
         return String(data: data, encoding: .utf8)
+    }
+    static func lookupQuery(_ user: String) -> [String: Any] {
+        var query = base(user)
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        let context = LAContext(); context.interactionNotAllowed = true
+        query[kSecUseAuthenticationContext as String] = context
+        return query
     }
     public static func save(password: String, for user: String) throws {
         let query = base(user)

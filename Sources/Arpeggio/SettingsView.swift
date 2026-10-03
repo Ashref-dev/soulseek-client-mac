@@ -69,11 +69,20 @@ private struct NetworkSettings: View {
                         Text(model.connection.label)
                     }
                 }
+                LabeledContent("Server") {
+                    HStack(spacing: 4) {
+                        if !model.settings.isLocalServer { Text(model.settings.targetDescription).foregroundStyle(.secondary); Text("·").foregroundStyle(.tertiary) }
+                        ServerTargetText(settings: model.settings)
+                    }
+                    .lineLimit(1)
+                }
             } header: {
                 Text("Account")
             } footer: {
-                Text("Your password is stored in the macOS Keychain. Soulseek sends it to the server unencrypted.")
-                    .foregroundStyle(.secondary)
+                Text(model.settings.isLocalServer
+                     ? "This is a local test server, not the Soulseek network. Change it in Advanced."
+                     : "Passwords you choose to remember are stored in the macOS Keychain. Soulseek sends them to the server unencrypted.")
+                    .foregroundStyle(model.settings.isLocalServer ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
             }
             Section {
                 HStack {
@@ -82,8 +91,10 @@ private struct NetworkSettings: View {
                         Button("Disconnect") { Task { await model.disconnect() } }
                     } else {
                         Button("Reconnect") {
-                            let password = model.savedPassword()
-                            Task { await model.login(password: password) }
+                            Task {
+                                let password = await model.savedPassword()
+                                await model.login(password: password)
+                            }
                         }
                         .disabled(model.connection.isBusy || model.settings.username.isEmpty)
                         .help("Connect using the password saved in Keychain")
@@ -94,7 +105,7 @@ private struct NetworkSettings: View {
             }
         }
         .formStyle(.grouped)
-        .frame(height: 300)
+        .frame(height: 320)
     }
 }
 
@@ -201,6 +212,14 @@ private struct AdvancedSettings: View {
     @Bindable var model: AppModel
 
     private var log: String { model.diagnostics.joined(separator: "\n") }
+    /// Display-only: consecutive repeats (e.g. one refused socket per retry) collapse into a single counted line.
+    private var displayLog: String {
+        var runs: [(line: String, count: Int)] = []
+        for line in model.diagnostics {
+            if let last = runs.last, last.line == line { runs[runs.count - 1].count += 1 } else { runs.append((line, 1)) }
+        }
+        return runs.map { $0.count > 1 ? "\($0.line)  (×\($0.count))" : $0.line }.joined(separator: "\n")
+    }
 
     var body: some View {
         Form {
@@ -213,7 +232,7 @@ private struct AdvancedSettings: View {
                 }
                 if let reason = model.connection.failureReason {
                     LabeledContent("Last error") {
-                        Text(reason).foregroundStyle(.secondary).textSelection(.enabled).multilineTextAlignment(.trailing)
+                        Text(DiagnosticDigest.headline(reason)).lineLimit(4).foregroundStyle(.secondary).textSelection(.enabled).multilineTextAlignment(.trailing)
                     }
                 }
                 if model.privilegeSeconds > 0 {
@@ -225,12 +244,35 @@ private struct AdvancedSettings: View {
             Section {
                 TextField("Server", text: $model.settings.server)
                 TextField("Server port", value: $model.settings.port, format: .number.grouping(.never))
+                LabeledContent("Target") {
+                    Label(model.settings.targetDescription,
+                          systemImage: model.settings.isSoulseekServer ? "globe" : model.settings.isLocalServer ? "exclamationmark.triangle.fill" : "server.rack")
+                        .foregroundStyle(model.settings.isLocalServer ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+                }
+                HStack {
+                    if model.settings.isLocalServer {
+                        Text("Local test servers are developer fixtures. Their accounts and files aren’t on Soulseek.")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer()
+                    Button("Restore Default Server") { Task { await model.useSoulseekServer() } }
+                        .disabled(model.settings.isSoulseekServer)
+                        .help("Switch to \(AppSettings.soulseekEndpoint). Username, password and other settings are kept.")
+                }
+            } header: {
+                Text("Server")
+            } footer: {
+                Text("Default: \(AppSettings.soulseekEndpoint). Changes apply the next time you connect.")
+                    .foregroundStyle(.secondary)
+            }
+            Section {
                 TextField("Listening port", value: $model.settings.listeningPort, format: .number.grouping(.never))
                     .help("Other peers connect to this port. Forward it in your router for best connectivity.")
             } header: {
-                Text("Ports")
+                Text("Incoming Connections")
             } footer: {
-                Text("Changes apply the next time you connect. Peers that can’t reach your listening port fall back to indirect connections, which fail if neither side is reachable.")
+                Text("Peers that can’t reach your listening port fall back to indirect connections, which fail if neither side is reachable.")
                     .foregroundStyle(.secondary)
             }
             Section {
@@ -241,7 +283,7 @@ private struct AdvancedSettings: View {
                             .frame(maxWidth: .infinity, minHeight: 60)
                     } else {
                         ScrollView {
-                            Text(log)
+                            Text(displayLog)
                                 .font(.caption.monospaced())
                                 .foregroundStyle(.secondary)
                                 .textSelection(.enabled)
@@ -271,7 +313,7 @@ private struct AdvancedSettings: View {
             }
         }
         .formStyle(.grouped)
-        .frame(height: 560)
+        .frame(height: 600)
     }
 }
 

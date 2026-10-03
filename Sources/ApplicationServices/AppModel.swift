@@ -50,6 +50,7 @@ public final class AppModel {
     @ObservationIgnored var reconnectTask: Task<Void, Never>?
     @ObservationIgnored var buffered: [SearchResult] = []
     @ObservationIgnored var resultIDs: Set<String> = []
+    @ObservationIgnored var searchRevision: UInt64 = 0
     @ObservationIgnored var wishlistTokens: [UInt32: String] = [:]
     @ObservationIgnored var wishlistSeconds: UInt32 = 0
     @ObservationIgnored var intentionallyOffline = true
@@ -60,6 +61,9 @@ public final class AppModel {
     @ObservationIgnored var notificationDates: [String: Date] = [:]
     @ObservationIgnored var loginRevision: UInt64 = 0
     @ObservationIgnored var reconnectAllowed = false
+    @ObservationIgnored var credentialLookup: @Sendable (String) async throws -> String = { username in
+        try await Task.detached(priority: .utility) { try Keychain.password(for: username) ?? "" }.value
+    }
     @ObservationIgnored var shuttingDown = false
     @ObservationIgnored var rescanPending = false
     @ObservationIgnored var shareScanTask: Task<(Int, UInt64), Never>?
@@ -127,6 +131,10 @@ public final class AppModel {
             await transferEngine.revalidateUploads()
         } catch { self.error = error.localizedDescription }
     }
+    public func useSoulseekServer() async {
+        settings.useSoulseekServer(); error = nil
+        await saveSettings()
+    }
     func configureTransfers() async {
         await transferEngine.configure(root: URL(fileURLWithPath: settings.downloadDirectory), downloads: settings.downloadSlots,
                                        uploads: settings.uploadSlots, downloadLimitKB: settings.downloadLimitKB ?? 0,
@@ -148,6 +156,7 @@ public final class AppModel {
     }
     public func login(password: String, remember: Bool = true, automatic: Bool = false) async {
         guard !shuttingDown else { return }
+        error = nil
         loginRevision &+= 1; let revision = loginRevision
         activeSessionGeneration = nil
         let configuration = settings
@@ -165,20 +174,21 @@ public final class AppModel {
             guard revision == loginRevision else { return }
             messages = try await database.all(ChatMessage.self, collection: "messages").filter { $0.account == activeAccount }.sorted { $0.date < $1.date }
             guard revision == loginRevision else { return }
-            if remember {
-                do { try Keychain.save(password: password, for: configuration.username) }
-                catch { self.error = "Signed in, but couldn’t save the password in Keychain. You’ll need to enter it again when reconnecting." }
-            }
             await saveSettings()
             try await session.send(code: 64)
             try await session.send(code: 92)
-            await requestNotifications()
             await publishShares()
             for user in users { try await watchUser(user.username) }
+            if remember {
+                do { try await Task.detached(priority: .utility) { try Keychain.save(password: password, for: configuration.username) }.value }
+                catch { self.error = "Signed in, but couldn’t save the password in Keychain. You’ll need to enter it again when reconnecting." }
+            }
+            await requestNotifications()
         } catch { if revision == loginRevision, !shuttingDown { self.error = error.localizedDescription } }
     }
-    public func savedPassword() -> String {
-        do { return try Keychain.password(for: settings.username) ?? "" }
+    public func savedPassword() async -> String {
+        let username = settings.username
+        do { return try await credentialLookup(username) }
         catch { self.error = error.localizedDescription; return "" }
     }
     public func disconnect() async {
@@ -188,19 +198,6 @@ public final class AppModel {
         reconnectTask?.cancel(); reconnectTask = nil; wishlistTask?.cancel(); wishlistTask = nil
         await session.disconnect(); await transferEngine.setConnected(false)
     }
-    public func search() async {
-        let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
-        results = []; buffered = []; resultIDs = []; searching = true
-        do {
-            let token = await session.nextToken(); searchToken = token
-            _ = try await session.search(query: text, token: token)
-            let item = SearchHistory(query: text)
-            history.insert(item, at: 0); history = Array(history.prefix(100))
-            try await database.put(item, collection: "history", id: item.id)
-        } catch { self.error = error.localizedDescription; searching = false }
-    }
-    public func stopSearch() { searching = false; searchToken = nil; flushResults() }
     public func download(_ items: [SearchResult]) async {
         do { try await transferEngine.enqueue(items) } catch { self.error = error.localizedDescription }
     }

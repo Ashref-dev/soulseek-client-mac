@@ -17,6 +17,12 @@ extension TransferEngine {
                 try await session.peerSend(user: user, code: 41, payload: response.data); return
             }
             guard size == transfers[index].file.size else { await fail(transfers[index].id, error: FileSafetyError.sizeMismatch); return }
+            if let accepted = transfers[index].token {
+                var response = WireWriter(); response.uint(token); response.byte(accepted == token ? 1 : 0)
+                if accepted != token { response.string("Queued") }
+                try await session.peerSend(user: user, code: 41, payload: response.data)
+                return
+            }
             let active = transfers.filter { !$0.upload && ($0.status == .transferring || ($0.status == .negotiating && $0.token != nil)) }.count
             guard active < downloadSlots else {
                 var response = WireWriter(); response.uint(token); response.byte(0); response.string("Queued")
@@ -85,13 +91,15 @@ extension TransferEngine {
         default: break
         }
     }
-    public func queueUpload(user: String, file: SharedFile, localURL: URL) async {
+    public func queueUpload(user: String, file: SharedFile, localURL: URL, start: Bool = true) async {
         guard transfers.filter({ $0.upload && [.queued, .negotiating, .transferring].contains($0.status) }).count < 1000 else { return }
         guard !transfers.contains(where: { $0.upload && $0.user == user && $0.file.path == file.path && [.queued, .negotiating, .transferring].contains($0.status) }) else { return }
         let item = Transfer(user: user, file: file, upload: true)
         transfers.append(item); uploadSources[item.id] = localURL
-        await save(item); publish(); await pumpUploads()
+        await save(item); publish()
+        if start { await pumpUploads() }
     }
+    public func startQueuedUploads() async { await pumpUploads() }
     func pumpUploads() async {
         guard connected else { return }
         let active = transfers.filter { $0.upload && [.negotiating, .transferring].contains($0.status) }.count

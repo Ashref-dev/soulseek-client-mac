@@ -13,23 +13,28 @@ extension AppModel {
             if state != .connected { userStatuses = [:] }
             if case .failed = state, !intentionallyOffline, reconnectAllowed, reconnectTask == nil {
                 let revision = loginRevision
+                let configuration = settings
                 reconnectTask = Task { [weak self] in
                     try? await Task.sleep(for: .seconds(15))
                     guard let self, !Task.isCancelled, revision == self.loginRevision else { return }
-                    self.reconnectTask = nil
-                    let password = self.savedPassword()
-                    if !password.isEmpty { self.connection = .reconnecting; await self.login(password: password, automatic: true) }
+                    await self.reconnectAfterCredentialLookup(configuration: configuration, revision: revision)
                 }
             }
         case .search(let token, let incoming):
             if token == searchToken {
+                guard results.count + buffered.count < 50_000 else { return }
                 let ignored = Set(users.filter(\.ignored).map(\.username))
-                for result in incoming where results.count + buffered.count < 50_000 && !ignored.contains(result.user) {
+                for result in incoming {
+                    if results.count + buffered.count >= 50_000 { break }
+                    if ignored.contains(result.user) { continue }
                     if resultIDs.insert(result.id).inserted { buffered.append(result) }
                 }
-                if batchTask == nil {
+                if batchTask == nil, !buffered.isEmpty {
+                    let revision = searchRevision
                     batchTask = Task { [weak self] in
-                        try? await Task.sleep(for: .milliseconds(120)); self?.flushResults()
+                        do { try await Task.sleep(for: .milliseconds(250)); try Task.checkCancellation() } catch { return }
+                        guard let self, self.searchRevision == revision else { return }
+                        self.flushResults()
                     }
                 }
             } else if let id = wishlistTokens[token], let index = wishlist.firstIndex(where: { $0.id == id }) {
@@ -114,6 +119,17 @@ extension AppModel {
         }
     }
     func flushResults() { results.append(contentsOf: buffered); buffered.removeAll(keepingCapacity: true); batchTask = nil }
+    func reconnectAfterCredentialLookup(configuration: AppSettings, revision: UInt64) async {
+        let password = await savedPassword()
+        guard !Task.isCancelled, revision == loginRevision else { return }
+        reconnectTask = nil
+        guard !intentionallyOffline, reconnectAllowed, !shuttingDown,
+              settings.username == configuration.username, settings.server == configuration.server,
+              settings.port == configuration.port, settings.listeningPort == configuration.listeningPort,
+              !password.isEmpty else { return }
+        connection = .reconnecting
+        await login(password: password, automatic: true)
+    }
     func handlePeer(user: String, code: UInt32, payload: Data) async throws {
         var trusted = false
         if users.contains(where: { $0.username == user && $0.trusted }) { trusted = await session.peerMatchesServerAddress(user) }
@@ -130,13 +146,20 @@ extension AppModel {
             var reader = WireReader(payload); let token = try reader.uint(); let folder = try reader.string()
             let library = ignored ? [:] : await shareIndex.library(allowPrivate: trusted, configuredFolders: currentShareFolders)
             var writer = WireWriter(); writer.uint(token); writer.string(folder)
-            PeerCodec.writeFolders(library.filter { $0.key == folder || $0.key.hasPrefix(folder + "\\") }, to: &writer)
+            let selected = library.filter { $0.key == folder || $0.key.hasPrefix(folder + "\\") }
+                .mapValues { $0.filter { $0.size <= 16 * 1024 * 1024 * 1024 } }
+            try PeerCodec.validateFolders(selected)
+            PeerCodec.writeFolders(selected, to: &writer)
             try await session.peerSend(user: user, code: 37, payload: Zlib.deflate(writer.data))
         case 37:
-            var reader = WireReader(try Zlib.inflate(payload))
-            let token = try reader.uint(); _ = try reader.string()
+            let decoded = try await Task.detached(priority: .userInitiated) {
+                var reader = WireReader(try Zlib.inflate(payload, limit: LibraryLimits.large.expandedBytes))
+                let token = try reader.uint(); _ = try reader.string()
+                return (token, try PeerCodec.readFolders(&reader, limits: .large))
+            }.value
+            let token = decoded.0
             guard let request = folderDownloads.removeValue(forKey: token), request.0 == user else { return }
-            let folders = try PeerCodec.readFolders(&reader)
+            let folders = decoded.1
             let files = folders.filter { $0.key == request.1 || $0.key.hasPrefix(request.1 + "\\") }.values.flatMap { $0 }
             await download(files.map { SearchResult(user: user, file: $0, freeSlot: false, speed: 0, queue: 0) })
         case 43:
@@ -146,6 +169,21 @@ extension AppModel {
             } else {
                 var writer = WireWriter(); writer.string(path); writer.string("File not shared.")
                 try await session.peerSend(user: user, code: 50, payload: writer.data)
+            }
+        case 40:
+            var reader = WireReader(payload)
+            let direction = try reader.uint()
+            guard direction == 0 else { try await transferEngine.peerMessage(user: user, code: code, payload: payload); return }
+            let token = try reader.uint(); let path = try reader.string()
+            var response = WireWriter(); response.uint(token); response.byte(0)
+            if !ignored, let file = await shareIndex.resolve(path, allowPrivate: trusted, configuredFolders: currentShareFolders) {
+                await transferEngine.queueUpload(user: user, file: file.file, localURL: file.localURL, start: false)
+                response.string("Queued")
+                try await session.peerSend(user: user, code: 41, payload: response.data)
+                await transferEngine.startQueuedUploads()
+            } else {
+                response.string("File not shared.")
+                try await session.peerSend(user: user, code: 41, payload: response.data)
             }
         default: try await transferEngine.peerMessage(user: user, code: code, payload: payload)
         }

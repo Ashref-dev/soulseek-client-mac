@@ -62,7 +62,9 @@ func partialDownloadResumesAfterRelaunch() async throws {
     receiver.settings.downloadLimitKB = 256
     sender.settings.sharedFolders = [ShareFolder(path: share.path)]
     await receiver.saveSettings(); await sender.saveSettings()
+    receiver.error = "Previous sign-in failed."
     await receiver.login(password: "fixture-only", remember: false); await sender.login(password: "fixture-only", remember: false)
+    #expect(receiver.error == nil)
     receiver.query = "resume"; await receiver.search()
     try await waitUntil("resume search") { !receiver.results.isEmpty }
     await receiver.download([try #require(receiver.results.first)])
