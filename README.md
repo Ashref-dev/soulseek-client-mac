@@ -8,7 +8,7 @@ No SoulseekQt wrapper, Nicotine+ installation, Electron, Docker, external daemon
 
 The native application builds on macOS 27 with Xcode 27. Automated tests exercise actual TCP connections between independent Swift client instances: login framing, searches, browsing, uploads, downloads, callback connections, private messages, rooms, and partial-download restoration. Hostile-input, filesystem, lifecycle, persistence, and file-watching tests are included.
 
-**Real-account Soulseek interoperability is deliberately pending.** It will be tested separately with an account supplied by its owner. Local protocol fixtures are not evidence of successful authentication against the public server or compatibility with every SoulseekQt/Nicotine+/slskd peer. No automated throwaway accounts are created.
+**Live interoperability has now been exercised with owner-authorized accounts.** Public-server authentication succeeded, global searches returned thousands of independent-peer results, a remote library returned 405 folders and 2,847 files, and external downloads completed at 880 bytes and 7,010,506 bytes. An independent aioslsk client also browsed and downloaded 70 exact original bytes shared by Arpeggio, using public-server authentication and an explicit same-Mac peer route. This does not prove every client or NAT/router configuration. Credentials and generated captures are never committed.
 
 ## Build and run
 
@@ -48,7 +48,7 @@ Use the packaged `.app` when checking notifications, app identity, and login-ite
 1. Click the account control at the bottom of the sidebar or choose **Network → Connect**.
 2. Enter your Soulseek username and password. Password storage is optional and uses Keychain.
 3. Accept the explicit notice about Soulseek's unencrypted authentication protocol.
-4. Search by artist, album, track, or filename. Results arrive over peer connections and are batched for presentation.
+4. Search by artist, album, track, or filename. Results arrive over peer connections and are batched for presentation as **user → folder/release → tracks**, with collapsed groups and whole-folder actions.
 5. Select files to download, or use **Download Entire Folder** to request the complete remote folder rather than only the search hits.
 6. Add shared directories in **Settings → Sharing**. Trusted-only directories require a trusted user and an IP matching the server's peer address.
 
@@ -106,11 +106,15 @@ This **optional developer fixture** binds only to loopback and prints its tempor
 
 The fixture is not shipped inside Arpeggio.app, is not needed for normal use, and never contacts the public Soulseek service. It expires after ten minutes. Its sample credentials are intentionally public, local-only test values.
 
+Use `ARPEGGIO_DATA_DIRECTORY` for an isolated fixture profile. If you used your normal profile, select **Use Soulseek Server** in the sign-in sheet or **Restore Default Server** in Advanced settings afterwards. These controls preserve the username and download preferences.
+
+`swift run ArpeggioLive --help` describes an optional developer-only public-network verification driver, not bundled in the app. It reads the password silently from a terminal and isolates state under `Application Support/ArpeggioLive`, listening on port 2235. Use only authorized accounts and freely distributable content: an unused username registers on first sign-in, `download` can fetch a third-party file under 10 MB, and interactive `shares` publishes a generated original test file. Do not run it alongside another client signed into the same account.
+
 `scripts/native-qa.swift` inspects and drives the packaged app through macOS accessibility APIs. It requires explicit Accessibility/Screen Recording permission from macOS. Use it only with isolated fixture data, never to publish real conversations or credentials. Keyboard events are PID-targeted, not posted globally.
 
 ## Known limits and joint test checklist
 
-- Public-server login, independent-client interoperability, NAT/router variations, and real-world network recovery await the joint account test.
+- Public-server login, independent-peer discovery/browse/downloads, and an independent-client upload check have passed. Other client versions, router variations, and extended network-recovery scenarios still require testing.
 - Automatic UPnP/NAT-PMP port mapping and obfuscated peer connections are not implemented. Plain TCP and server-assisted callbacks are implemented.
 - The distributed role is a leaf, not a forwarding branch accepting children.
 - Large search and browse responses have explicit safety budgets. Search presentation caps at 50,000 results; a wishlist retains 20,000 unique matches. Library search shows at most 2,000 file matches at once.
@@ -119,7 +123,7 @@ The fixture is not shipped inside Arpeggio.app, is not needed for normal use, an
 - System notification and login-item permission behavior depends on installation/signing and must be checked on the target Mac.
 - Interests/recommendation UI and private-room administrative tools are not included; ordinary private messages, room membership, and room chat are implemented.
 
-The joint session should cover login, global search, folder browsing/downloads with Nicotine+/SoulseekQt peers, incoming uploads, queue/denial handling, restart/resume, messages, rooms, wishlist timing, and listening-port/firewall diagnostics. Do not reuse a password from another service.
+Continue testing folder downloads with additional Nicotine+/SoulseekQt peers, queue/denial handling, network loss and resume, messages, rooms, wishlist timing, and listening-port/firewall diagnostics. Do not reuse a password from another service. Advanced settings and the sign-in sheet show the actual target; a local test endpoint can be explicitly restored to the default Soulseek server without changing account or download preferences.
 
 ## License and references
 
