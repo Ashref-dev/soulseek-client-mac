@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import Foundation
+import Darwin
 
 func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
     var value: CFTypeRef?
@@ -13,8 +14,12 @@ func flatten(_ element: AXUIElement, depth: Int = 0) -> [(AXUIElement, Int)] {
     return [(element, depth)] + children.prefix(500).flatMap { flatten($0, depth: depth + 1) }
 }
 func describe(_ element: AXUIElement) -> String {
-    [kAXRoleAttribute, kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute, kAXIdentifierAttribute]
-        .compactMap { key in attribute(element, key).map { "\(key)=\($0)" } }.joined(separator: " | ")
+    let secure = attribute(element, kAXSubroleAttribute) as? String == kAXSecureTextFieldSubrole
+    return [kAXRoleAttribute, kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute, kAXIdentifierAttribute]
+        .compactMap { key in
+            if secure && key == kAXValueAttribute { return "AXValue=<redacted>" }
+            return attribute(element, key).map { "\(key)=\($0)" }
+        }.joined(separator: " | ")
 }
 let arguments = Array(CommandLine.arguments.dropFirst())
 guard let command = arguments.first else {
@@ -24,7 +29,8 @@ guard let command = arguments.first else {
 guard AXIsProcessTrusted() else {
     FileHandle.standardError.write(Data("Native QA needs Accessibility permission for the invoking terminal.\n".utf8)); exit(1)
 }
-let expectedBundle = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("dist/Arpeggio.app").resolvingSymlinksInPath()
+let defaultBundle = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("dist/Arpeggio.app")
+let expectedBundle = ProcessInfo.processInfo.environment["ARPEGGIO_QA_BUNDLE"].map { URL(fileURLWithPath: $0) }?.resolvingSymlinksInPath() ?? defaultBundle.resolvingSymlinksInPath()
 let candidates = NSRunningApplication.runningApplications(withBundleIdentifier: "tn.ashref.arpeggio").filter { $0.bundleURL?.resolvingSymlinksInPath() == expectedBundle }
 guard candidates.count == 1, let application = candidates.first else {
     FileHandle.standardError.write(Data("Launch Arpeggio.app first.\n".utf8)); exit(1)
@@ -58,10 +64,12 @@ case "click":
     let requested = arguments[1]
     let element: AXUIElement?
     if let index = Int(requested), nodes.indices.contains(index) { element = nodes[index].0 }
-    else { element = nodes.first { node in
-        [kAXButtonRole, kAXMenuItemRole, kAXCheckBoxRole, kAXRadioButtonRole, kAXPopUpButtonRole].contains(attribute(node.0, kAXRoleAttribute) as? String ?? "") &&
-        [kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute].contains { attribute(node.0, $0) as? String == requested }
-    }?.0 }
+    else { element = nodes.enumerated().first { index, node in
+        let role = attribute(node.0, kAXRoleAttribute) as? String ?? ""
+        guard [kAXButtonRole, kAXMenuItemRole, kAXCheckBoxRole, kAXRadioButtonRole, kAXPopUpButtonRole].contains(role) else { return false }
+        if [kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute].contains(where: { attribute(node.0, $0) as? String == requested }) { return true }
+        return role == kAXCheckBoxRole && nodes[max(0, index - 3)..<index].contains { attribute($0.0, kAXValueAttribute) as? String == requested }
+    }?.element.0 }
     guard let element else { print("No matching control: \(requested)"); exit(1) }
     let result = AXUIElementPerformAction(element, kAXPressAction as CFString)
     print("AXPress: \(result.rawValue)"); if result != .success { exit(1) }
@@ -95,10 +103,17 @@ case "select":
     guard let element else { print("No matching row."); exit(1) }
     let result = AXUIElementSetAttributeValue(element, kAXSelectedAttribute as CFString, kCFBooleanTrue)
     print("AXSelect: \(result.rawValue)"); if result != .success { exit(1) }
-case "fill":
-    guard arguments.count >= 3 else { exit(64) }
+case "fill", "secure-fill":
+    application.activate()
+    guard arguments.count >= (command == "secure-fill" ? 2 : 3) else { exit(64) }
     let index: Int?
     if let numeric = Int(arguments[1]) { index = numeric }
+    else if arguments[1] == "search" {
+        index = nodes.indices.first { position in
+            attribute(nodes[position].0, kAXRoleAttribute) as? String == kAXTextFieldRole &&
+            flatten(nodes[position].0).contains { attribute($0.0, kAXDescriptionAttribute) as? String == "Search" }
+        }
+    }
     else {
         index = nodes.indices.first { position in
             position > 0 && attribute(nodes[position].0, kAXRoleAttribute) as? String == kAXTextFieldRole &&
@@ -113,11 +128,23 @@ case "fill":
         Thread.sleep(forTimeInterval: 0.025)
     }
     guard let focused = attribute(app, kAXFocusedUIElementAttribute), CFEqual(focused, nodes[index].0) else { print("The app did not focus the requested field."); exit(1) }
-    postKey(0, flags: .maskCommand); Thread.sleep(forTimeInterval: 0.05)
-    typeText(arguments[2]); Thread.sleep(forTimeInterval: 0.1)
+    let text: String
+    if command == "secure-fill" {
+        guard isatty(STDIN_FILENO) != 0 else { print("Secure entry requires a terminal."); exit(1) }
+        var original = termios(); guard tcgetattr(STDIN_FILENO, &original) == 0 else { exit(1) }
+        var hidden = original; hidden.c_lflag &= ~tcflag_t(ECHO)
+        guard tcsetattr(STDIN_FILENO, TCSANOW, &hidden) == 0 else { exit(1) }
+        FileHandle.standardOutput.write(Data("Secure value (hidden): ".utf8))
+        let input = readLine()
+        _ = tcsetattr(STDIN_FILENO, TCSANOW, &original)
+        guard let input else { exit(1) }; text = input
+        FileHandle.standardOutput.write(Data("\n".utf8))
+    } else { text = arguments[2] }
+    postKey(0, flags: .maskCommand, text: "a"); Thread.sleep(forTimeInterval: 0.05)
+    typeText(text); Thread.sleep(forTimeInterval: 0.1)
     let value = attribute(nodes[index].0, kAXValueAttribute) as? String
-    guard value == arguments[2] else { print("Typed input was not accepted by this control."); exit(1) }
-    postKey(48)
+    if command != "secure-fill", value != text { print("Typed input was not accepted by this control."); exit(1) }
+    if arguments[1] != "search" { postKey(48) }
 case "key":
     let codes: [String: CGKeyCode] = ["1": 18, "2": 19, "3": 20, "4": 21, "5": 23, "6": 22, "7": 26, "8": 28, "9": 25,
                                    "k": 40, "f": 3, ",": 43, "n": 45, "b": 11, "w": 13, "q": 12, "return": 36, "tab": 48,
@@ -128,7 +155,7 @@ case "key":
     if modifiers.contains("command") { flags.insert(.maskCommand) }
     if modifiers.contains("shift") { flags.insert(.maskShift) }
     if modifiers.contains("option") { flags.insert(.maskAlternate) }
-    postKey(code, flags: flags)
+    postKey(code, flags: flags, text: arguments[1].count == 1 ? arguments[1] : nil)
 case "type":
     guard arguments.count >= 2 else { exit(64) }
     typeText(arguments[1])
