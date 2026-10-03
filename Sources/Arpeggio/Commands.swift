@@ -66,8 +66,10 @@ struct HelpView: View {
             VStack(alignment: .leading, spacing: 18) {
                 Label("Arpeggio", systemImage: "music.quarternote.3").font(.largeTitle.weight(.semibold))
                     .foregroundStyle(Color.arpeggio)
-                topic("Connecting", "Choose Network › Connect and sign in with your Soulseek account. The legacy protocol sends passwords without encryption, so use a password unique to Soulseek.")
-                topic("Searching", "Press ⌘F, type a query and press Return. Results stream in live. Exclude words with a leading minus. Filter, sort and group results from the bar above the table; double-click to download.")
+                topic("Connecting", "Choose Network › Connect and sign in with your Soulseek account. Arpeggio uses server.slsknet.org:2242 unless you change it in Settings › Advanced; the sign-in sheet always shows the server it will use. The legacy protocol sends passwords without encryption, so use a password unique to Soulseek.")
+                topic("New Accounts", "Soulseek has no separate sign-up. Signing in with an unused username (up to 30 ASCII characters) registers it with that password. Availability can’t be checked in advance: if the name is already taken, the server reports a wrong password.")
+                topic("Local Test Server", "A server on localhost or 127.0.0.1 is a developer fixture, not the Soulseek network. Choose Use Soulseek Server in the sign-in sheet, or Restore Default Server in Settings › Advanced, to switch back.")
+                topic("Searching", "Press ⌘F, type a query and press Return. Results stream into a user → folder → track outline, ranked by free slot and speed. Exclude words with a leading minus. Filter using the bar above the outline. Expand a folder to see tracks, double-click a track to download, or use Download Entire Folder for the complete release.")
                 topic("Transfers", "Downloads and Uploads list every transfer grouped by state. Pause, resume or cancel from the toolbar or context menu. Press Space to Quick Look a finished file.")
                 topic("Sharing", "Add folders in Settings › Sharing. Mark folders as trusted-only to hide them from everyone except users you trust.")
                 topic("Navigation", "⌘1–⌘9 jump to sections. ⌘K opens the command palette. ⇧⌘N starts a new message, ⇧⌘B browses a user.")
