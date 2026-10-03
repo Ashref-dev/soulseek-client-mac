@@ -51,8 +51,12 @@ extension SoulseekSession {
     func connectPeer(user: String, host: String, port: UInt16, type: String, callback: UInt32?, generation expected: UInt64? = nil) async {
         let attempt = expected ?? generation
         guard attempt == generation else { return }
+        let dial = "\(attempt)\u{1F}\(user)\u{1F}\(type)\u{1F}\(callback.map(String.init) ?? "direct")"
+        guard peerDials.count < 32, peerDials.insert(dial).inserted else { return }
+        defer { peerDials.remove(dial); peerDialSockets.removeValue(forKey: dial) }
         do {
             let socket = try TCPConnection(host: host, port: port)
+            peerDialSockets[dial] = socket
             do {
                 try await socket.start()
                 try requireGeneration(attempt)
@@ -88,6 +92,9 @@ extension SoulseekSession {
             }
             guard peers.count < 128 else { connection.socket.cancel(); return }
             peers[user] = connection; peerDirections[user] = initiated; connecting.remove(user)
+#if DEBUG
+            await report("Peer messaging ready: \(user), outgoing=\(initiated)")
+#endif
             rendezvous = rendezvous.filter { $0.value.0 != user || $0.value.1 != "P" }
             logger.debug("Peer messaging connection established")
             for (code, payload) in pending.removeValue(forKey: user) ?? [] { try await connection.send(code: code, payload: payload) }
@@ -109,17 +116,22 @@ extension SoulseekSession {
     func readPeer(_ connection: FramedConnection, user: String, generation attempt: UInt64) async {
         do {
             while !Task.isCancelled {
-                let (code, payload) = try await connection.read(peer: true)
+                let (code, payload) = try await connection.read(peer: true, budget: peerReceiveBudget) { code in
+                    try await self.admitPeerResponse(code, user: user, connection: connection, generation: attempt)
+                }
+#if DEBUG
+                if [36, 37, 40, 41, 43, 44, 46, 50, 51].contains(code) { await report("Peer control \(code) from \(user), bytes=\(payload.count)") }
+#endif
                 try requireGeneration(attempt)
                 switch code {
                 case 9:
                     guard !activeSearches.isEmpty else { continue }
-                    let (id, results) = try PeerCodec.search(payload)
+                    let (id, results) = try PeerCodec.search(payload, allowedTokens: activeSearches)
                     guard activeSearches.contains(id), results.allSatisfy({ $0.user == user }) else { continue }
                     await emit(.search(id, results))
                 case 5:
                     guard expectedLibraries.remove(user) != nil else { continue }
-                    await emit(.library(try PeerCodec.library(user: user, data: payload)))
+                    await emit(.library(try PeerCodec.library(user: user, data: payload, limits: .large)))
                 case 16:
                     guard expectedUserInfo.remove(user) != nil else { continue }
                     var reader = WireReader(payload); let description = try reader.string()
@@ -127,7 +139,12 @@ extension SoulseekSession {
                     let hasPicture = try reader.byte() != 0
                     let picture = try hasPicture ? reader.bytes(reader.count(limit: 8_000_000)) : nil
                     await emit(.userInfo(user, description, picture))
-                case 4, 15, 36, 37, 40, 41, 43, 44, 46, 50, 51:
+                case 37:
+                    var reader = WireReader(try Zlib.inflate(payload, limit: LibraryLimits.large.expandedBytes))
+                    let token = try reader.uint()
+                    guard expectedFolders[user]?.remove(token) != nil else { throw ProtocolError.invalid("Unrequested folder response.") }
+                    await emit(.peerMessage(user, code, payload))
+                case 4, 15, 36, 40, 41, 43, 44, 46, 50, 51:
                     await emit(.peerMessage(user, code, payload))
                 default: break
                 }
@@ -137,10 +154,21 @@ extension SoulseekSession {
                 peers.removeValue(forKey: user); peerTasks.removeValue(forKey: user)
                 peerDirections.removeValue(forKey: user); addresses.removeValue(forKey: user)
                 expectedLibraries.remove(user); expectedUserInfo.remove(user)
+                expectedFolders.removeValue(forKey: user)
                 await emit(.peerUnavailable(user))
             }
             if !Task.isCancelled, attempt == generation { await report("Peer messaging ended: \(error.localizedDescription)") }
             connection.socket.cancel()
+        }
+    }
+    func admitPeerResponse(_ code: UInt32, user: String, connection: FramedConnection, generation attempt: UInt64) throws {
+        try requireGeneration(attempt)
+        guard peers[user] === connection else { throw CancellationError() }
+        switch code {
+        case 5: guard expectedLibraries.contains(user) else { throw ProtocolError.invalid("Unrequested library response.") }
+        case 37: guard expectedFolders[user]?.isEmpty == false else { throw ProtocolError.invalid("Unrequested folder response.") }
+        case 16: guard expectedUserInfo.contains(user) else { throw ProtocolError.invalid("Unrequested user information.") }
+        default: break
         }
     }
     func readDistributed(_ connection: FramedConnection, user: String, generation attempt: UInt64) async {

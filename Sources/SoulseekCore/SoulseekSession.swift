@@ -21,9 +21,13 @@ public actor SoulseekSession {
     var keepaliveTask: Task<Void, Never>?
     var connecting: Set<String> = []
     var incomingHandshakes = 0
+    var peerDials: Set<String> = []
+    var peerDialSockets: [String: TCPConnection] = [:]
     var fileConnections: [ObjectIdentifier: FramedConnection] = [:]
     var distributed: FramedConnection?
     var expectedLibraries: Set<String> = []
+    var expectedFolders: [String: Set<UInt32>] = [:]
+    let peerReceiveBudget = ReceiveBudget()
     var activeSearches: Set<UInt32> = []
     var expectedUserInfo: Set<String> = []
     var username = ""
@@ -36,6 +40,7 @@ public actor SoulseekSession {
     public func currentGeneration() -> UInt64 { generation }
     func emit(_ event: SoulseekEvent) async { await channel.send(SessionEvent(generation: generation, account: username, event: event)) }
     public func nextToken() -> UInt32 { token &+= 1; return token }
+    public func retireSearch(_ token: UInt32) { activeSearches.remove(token) }
     public func acknowledgeMessage(_ id: UInt32, generation expected: UInt64) async throws {
         var writer = WireWriter(); writer.uint(id); try await send(code: 23, payload: writer.data, generation: expected)
     }
@@ -51,7 +56,8 @@ public actor SoulseekSession {
         let attempt = generation &+ 1
         await disconnect()
         try requireGeneration(attempt)
-        guard !user.isEmpty, !password.isEmpty else { throw ProtocolError.invalid("Enter your Soulseek username and password.") }
+        guard !password.isEmpty else { throw ProtocolError.invalid("Enter your Soulseek password.") }
+        try LoginIdentity.validateUsername(user)
         username = user
         await emit(.state(.connecting))
         do {
@@ -81,6 +87,7 @@ public actor SoulseekSession {
                 case "INVALIDUSERNAME": message = "That Soulseek username isn’t valid. Check the spelling and try again."
                 case "EMPTYPASSWORD": message = "Enter your Soulseek password."
                 case "SVRFULL": message = "The Soulseek server is full. Try again shortly."
+                case "SVRPRIVATE": message = "The server is not accepting new accounts right now. Use an existing account or try again later."
                 case "INVALIDVERSION": message = "The server rejected Arpeggio’s client version. Please report this compatibility issue."
                 default: message = "Soulseek rejected sign-in: \(String(greeting.prefix(128)))"
                 }
@@ -90,6 +97,10 @@ public actor SoulseekSession {
             try await connection.send(code: 2, payload: wait.data)
             try requireGeneration(attempt)
             try await connection.send(code: 71, payload: Data([1]))
+            var branchRoot = WireWriter(); branchRoot.string(user)
+            try await connection.send(code: 127, payload: branchRoot.data)
+            var branchLevel = WireWriter(); branchLevel.uint(0)
+            try await connection.send(code: 126, payload: branchLevel.data)
             try await connection.send(code: 100, payload: Data([0]))
             var status = WireWriter(); status.uint(2)
             try await connection.send(code: 28, payload: status.data)
@@ -104,7 +115,7 @@ public actor SoulseekSession {
                 }
             }
         } catch {
-            let message = error is ProtocolError || error is CancellationError ? error.localizedDescription : "Couldn’t reach the Soulseek server. Check your connection and server settings, then try again."
+            let message = error is ProtocolError || error is CancellationError ? error.localizedDescription : "Couldn’t connect to \(host):\(port). Check the configured server and your network connection."
             if attempt == generation {
                 await disconnect()
                 await emit(.diagnostic("Connection detail: \(error.localizedDescription)"))
@@ -120,9 +131,12 @@ public actor SoulseekSession {
         keepaliveTask?.cancel(); keepaliveTask = nil
         server?.socket.cancel(); server = nil
         listener?.cancel(); listener = nil
+        for socket in peerDialSockets.values { socket.cancel() }
+        peerDialSockets.removeAll(); peerDials.removeAll()
         distributed?.socket.cancel(); distributed = nil
         for connection in fileConnections.values { connection.socket.cancel() }
         fileConnections.removeAll(); expectedLibraries.removeAll(); activeSearches.removeAll(); expectedUserInfo.removeAll()
+        expectedFolders.removeAll()
         for peer in peers.values { peer.socket.cancel() }
         for task in peerTasks.values { task.cancel() }
         peers.removeAll(); peerDirections.removeAll(); peerTasks.removeAll(); pending.removeAll(); connecting.removeAll(); rendezvous.removeAll(); addresses.removeAll()
@@ -151,6 +165,18 @@ public actor SoulseekSession {
         guard !user.isEmpty, user.utf8.count <= 256 else { throw ProtocolError.invalid("Invalid username.") }
         if code == 4 { expectedLibraries.insert(user) }
         if code == 15 { expectedUserInfo.insert(user) }
+        if code == 36 {
+            var reader = WireReader(payload)
+            let token = try reader.uint()
+            guard expectedFolders[user, default: []].count < 100 else { throw ProtocolError.oversized }
+            expectedFolders[user, default: []].insert(token)
+            let attempt = generation
+            Task {
+                try? await Task.sleep(for: .seconds(30))
+                guard attempt == self.generation else { return }
+                self.expectedFolders[user]?.remove(token)
+            }
+        }
         if let peer = peers[user] { try await peer.send(code: code, payload: payload); return }
         guard server != nil else { throw ProtocolError.disconnected }
         guard pending.count < 128, pending[user, default: []].count < 100 else { throw ProtocolError.oversized }

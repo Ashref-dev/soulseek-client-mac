@@ -79,21 +79,35 @@ public actor FramedConnection {
         try await socket.send(WireWriter.frame(code: code, payload: payload, narrow: narrow))
     }
     public func read(narrow: Bool = false, timeout: Int? = nil, peer: Bool = false) async throws -> (UInt32, Data) {
+        try await read(narrow: narrow, timeout: timeout, peer: peer, budget: nil, admit: nil)
+    }
+    func read(narrow: Bool = false, timeout: Int? = nil, peer: Bool = false,
+              budget: ReceiveBudget?, admit: (@Sendable (UInt32) async throws -> Void)?) async throws -> (UInt32, Data) {
         let header = try await exact(4, timeout: timeout)
         var reader = WireReader(header)
         let length = try reader.uint()
         let width = narrow ? 1 : 4
-        guard length >= width, length <= 32 * 1024 * 1024 else { throw ProtocolError.oversized }
+        guard length >= width, length <= 256 * 1024 * 1024 else { throw ProtocolError.oversized }
         var codeReader = WireReader(try await exact(width, timeout: timeout))
         let code = try narrow ? UInt32(codeReader.byte()) : codeReader.uint()
         let payloadLength = Int(length) - width
+        if !peer, !narrow, payloadLength > 32 * 1024 * 1024 { throw ProtocolError.oversized }
         if narrow, payloadLength > 8192 { throw ProtocolError.oversized }
+        if peer, code == 9, payloadLength > 16 * 1024 * 1024 { throw ProtocolError.oversized }
+        if peer, code == 16, payloadLength > 8 * 1024 * 1024 + 32_768 { throw ProtocolError.oversized }
         if peer, ![5, 9, 16, 37].contains(code), payloadLength > 8192 { throw ProtocolError.oversized }
+        try await admit?(code)
+        try budget?.reserve(payloadLength)
+        defer { budget?.release(payloadLength) }
+        let deadline = peer ? Task {
+            do { try await Task.sleep(for: .seconds(30)); socket.cancel() } catch { }
+        } : nil
+        defer { deadline?.cancel() }
         return (code, try await exact(payloadLength, timeout: timeout))
     }
     public func exact(_ count: Int, timeout: Int? = nil) async throws -> Data {
-        guard count >= 0, count <= 32 * 1024 * 1024 else { throw ProtocolError.oversized }
-        while buffer.count < count { buffer.append(try await socket.receive(timeout: timeout)) }
+        guard count >= 0, count <= 256 * 1024 * 1024 else { throw ProtocolError.oversized }
+        while buffer.count < count { buffer.append(try await socket.receive(maximum: min(65_536, count - buffer.count), timeout: timeout)) }
         let result = Data(buffer.prefix(count))
         buffer.removeFirst(count); return result
     }
