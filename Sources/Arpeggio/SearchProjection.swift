@@ -13,9 +13,16 @@ struct SearchProjection: Sendable {
     var rows: [SearchResult] = []
     var groups: [ResultGroup] = []
     var formats: [String] = []
-    nonisolated static func make(_ source: [SearchResult], filters: ResultFilters, order: [KeyPathComparator<SearchResult>], grouping: ResultGrouping) -> Self {
-        let rows = source.filter(filters.matches).sorted(using: order)
-        let formats = Array(Set(source.lazy.map(\.file.format).filter { !$0.isEmpty })).sorted()
+    nonisolated static func make(_ source: [SearchResult], filters: ResultFilters, order: [KeyPathComparator<SearchResult>], grouping: ResultGrouping) throws -> Self {
+        var rows: [SearchResult] = []; var availableFormats = Set<String>()
+        rows.reserveCapacity(source.count)
+        for (index, row) in source.enumerated() {
+            if index % 256 == 0 { try Task.checkCancellation() }
+            if filters.matches(row) { rows.append(row) }
+            if !row.file.format.isEmpty { availableFormats.insert(row.file.format) }
+        }
+        try Task.checkCancellation(); rows.sort(using: order); try Task.checkCancellation()
+        let formats = availableFormats.sorted()
         if grouping == .none { return Self(rows: rows, groups: [ResultGroup(id: "all", title: "", items: rows)], formats: formats) }
         var keys: [String] = []; var buckets: [String: [SearchResult]] = [:]
         for row in rows {

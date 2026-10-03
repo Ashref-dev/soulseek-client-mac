@@ -56,10 +56,13 @@ extension SearchResult {
 struct SearchView: View {
     @Bindable var model: AppModel
     let navigator: Navigator
-    @State private var selection = Set<SearchResult.ID>()
+    @State private var selection = Set<ResultNodeID>()
+    @State private var expandedUsers = Set<String>()
+    @State private var expandedFolders = Set<String>()
+    @State private var hierarchy = ResultHierarchy()
+    @State private var autoExpandedToken: UInt32?
     @State private var sortOrder = [KeyPathComparator(\SearchResult.slotRank), KeyPathComparator(\SearchResult.speed, order: .reverse)]
     @State private var filters = ResultFilters()
-    @State private var grouping = ResultGrouping.none
     @FocusState private var searchFocused: Bool
     @State private var projection = SearchProjection()
     @State private var showAdvancedFilters = false
@@ -84,15 +87,36 @@ struct SearchView: View {
         }
         .onSubmit(of: .search) { runSearch() }
         .onChange(of: navigator.searchFocusRequest) { searchFocused = true }
-        .onChange(of: model.searchToken) { selection.removeAll() }
-        .task(id: ProjectionKey(token: model.searchToken, count: model.results.count, filters: filters, grouping: grouping, sort: sortOrder)) {
-            let source = model.results
-            let filters = filters; let order = sortOrder; let grouping = grouping
-            let output = await Task.detached(priority: .userInitiated) {
-                SearchProjection.make(source, filters: filters, order: order, grouping: grouping)
-            }.value
-            guard !Task.isCancelled else { return }
-            projection = output
+        .onChange(of: model.searchToken) { _, token in
+            // Stop clears the token; keep the user's place. Only a new search resets the outline.
+            guard token != nil else { return }
+            selection.removeAll(); expandedUsers.removeAll(); expandedFolders.removeAll(); autoExpandedToken = nil
+            projection = SearchProjection(); hierarchy = ResultHierarchy()
+        }
+        .task(id: ProjectionKey(token: model.searchToken, count: 0, filters: filters, grouping: .none, sort: sortOrder)) {
+            var preparedCount = -1
+            while !Task.isCancelled {
+                if preparedCount == model.results.count {
+                    do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+                    continue
+                }
+                let source = model.results
+                let filters = filters; let order = sortOrder
+                let work = Task.detached(priority: .userInitiated) {
+                    try Task.checkCancellation()
+                    let projection = try SearchProjection.make(source, filters: filters, order: order, grouping: .none)
+                    try Task.checkCancellation()
+                    return (projection, try ResultHierarchy.make(projection.rows))
+                }
+                do {
+                    let output = try await withTaskCancellationHandler { try await work.value } onCancel: { work.cancel() }
+                    guard !Task.isCancelled else { return }
+                    projection = output.0; hierarchy = output.1
+                    preparedCount = source.count
+                    autoExpand()
+                } catch is CancellationError { return }
+                catch { model.error = "Couldn’t prepare the search results. \(error.localizedDescription)"; return }
+            }
         }
         .toolbar {
             ToolbarItemGroup {
@@ -100,9 +124,9 @@ struct SearchView: View {
                     Button("Stop", systemImage: "stop.circle") { model.stopSearch() }
                         .help("Stop accepting new results")
                 }
-                Button("Download", systemImage: "arrow.down.circle") { download(selection) }
-                    .disabled(selection.isEmpty || !model.connection.isConnected)
-                    .help("Download selected files")
+                Button("Download", systemImage: "arrow.down.circle") { actions.download(selection) }
+                    .disabled(!selection.contains(where: { if case .user = $0 { return false }; return true }) || !model.connection.isConnected)
+                    .help("Download selected files; selected folders download in full")
                 Button("Add to Wishlist", systemImage: "star") {
                     let query = model.query
                     Task { await model.addWish(query) }
@@ -115,8 +139,8 @@ struct SearchView: View {
 
     private var subtitle: String {
         if model.results.isEmpty { return model.searching ? "Searching…" : "" }
-        let users = Set(model.results.map(\.user)).count
-        return "\(model.results.count.formatted()) results from \(users.formatted()) users" + (model.searching ? " · live" : "")
+        let users = hierarchy.users.count
+        return "\(projection.rows.count.formatted()) results from \(users.formatted()) users" + (model.searching ? " · live" : "")
     }
 
     @ViewBuilder private func content(_ rows: [SearchResult]) -> some View {
@@ -131,8 +155,8 @@ struct SearchView: View {
                 Button("Clear Filters") { filters = ResultFilters() }
             }
         } else {
-            ResultsTable(model: model, navigator: navigator, groups: projection.groups, selection: $selection, sortOrder: $sortOrder,
-                         download: download)
+            SearchResultsOutline(model: model, navigator: navigator, hierarchy: hierarchy, selection: $selection,
+                                 expandedUsers: $expandedUsers, expandedFolders: $expandedFolders, actions: actions)
         }
     }
 
@@ -179,6 +203,7 @@ struct SearchView: View {
                 Divider()
                 ForEach(projection.formats, id: \.self) { Text($0).tag($0) }
             }
+            .labelsHidden()
             .fixedSize()
             Toggle("Free slots", isOn: $filters.freeSlotsOnly).toggleStyle(.checkbox)
             Button("Quality", systemImage: "slider.horizontal.3") { showAdvancedFilters.toggle() }
@@ -200,17 +225,12 @@ struct SearchView: View {
                     }.padding(16).frame(width: 340)
                 }
             Spacer()
-            Picker("Group", selection: $grouping) {
-                ForEach(ResultGrouping.allCases) { Text($0.rawValue).tag($0) }
-            }
-            .fixedSize()
             if filters.isActive {
                 Text("\(count.formatted()) shown").font(.caption).foregroundStyle(.secondary).monospacedDigit()
                 Button("Clear", systemImage: "xmark.circle.fill") { filters = ResultFilters() }
                     .labelStyle(.iconOnly).buttonStyle(.borderless)
             }
         }
-        .labelsHidden()
         .controlSize(.small)
         .padding(.horizontal, 14).padding(.vertical, 8)
         .overlay(alignment: .bottom) { Divider() }
@@ -222,95 +242,12 @@ struct SearchView: View {
         Task { await model.search() }
     }
 
-    private func download(_ ids: Set<SearchResult.ID>) {
-        let items = model.results.filter { ids.contains($0.id) }
-        guard !items.isEmpty else { return }
-        Task { await model.download(items) }
-    }
-}
+    private var actions: SearchResultActions { SearchResultActions(model: model, hierarchy: hierarchy) }
 
-struct ResultsTable: View {
-    let model: AppModel
-    let navigator: Navigator
-    let groups: [ResultGroup]
-    @Binding var selection: Set<SearchResult.ID>
-    @Binding var sortOrder: [KeyPathComparator<SearchResult>]
-    let download: (Set<SearchResult.ID>) -> Void
-
-    var body: some View {
-        Table(of: SearchResult.self, selection: $selection, sortOrder: $sortOrder) {
-            TableColumn("Name", value: \.name) { result in
-                Label {
-                    Text(result.name).lineLimit(1).help(result.file.path)
-                } icon: {
-                    Image(systemName: result.file.symbol).foregroundStyle(.secondary)
-                }
-            }
-            .width(min: 200, ideal: 320)
-            TableColumn("Folder", value: \.folder) { Text($0.folder).lineLimit(1).truncationMode(.head).foregroundStyle(.secondary) }
-                .width(min: 120, ideal: 220)
-            TableColumn("User", value: \.user) { Text($0.user).lineLimit(1) }
-                .width(min: 80, ideal: 120)
-            TableColumn("Size", value: \.size) { Text(Format.bytes($0.size)).monospacedDigit() }
-                .width(min: 60, ideal: 76)
-            TableColumn("Quality", value: \.bitrate) { Text($0.file.quality).lineLimit(1) }
-                .width(min: 70, ideal: 110)
-            TableColumn("Length", value: \.length) { Text(Format.clock($0.length)).monospacedDigit() }
-                .width(min: 44, ideal: 56)
-            TableColumn("Slot", value: \.slotRank) { result in
-                Image(systemName: result.freeSlot ? "checkmark.circle.fill" : "hourglass")
-                    .foregroundStyle(result.freeSlot ? Color.green : Color.secondary)
-                    .help(result.freeSlot ? "Free upload slot" : "Queued: \(result.queue)")
-                    .accessibilityLabel(result.freeSlot ? "Free slot" : "Queue \(result.queue)")
-            }
-            .width(min: 34, ideal: 40)
-            TableColumn("Speed", value: \.speed) { Text(Format.speed(Double($0.speed))).monospacedDigit().foregroundStyle(.secondary) }
-                .width(min: 60, ideal: 80)
-        } rows: {
-            ForEach(groups) { group in
-                if group.title.isEmpty {
-                    ForEach(group.items) { TableRow($0) }
-                } else {
-                    Section {
-                        ForEach(group.items) { TableRow($0) }
-                    } header: {
-                        Text("\(group.title)  ·  \(group.items.count)")
-                    }
-                }
-            }
-        }
-        .contextMenu(forSelectionType: SearchResult.ID.self) { ids in
-            menu(for: ids)
-        } primaryAction: { ids in
-            if model.connection.isConnected { download(ids) }
-        }
-    }
-
-    @ViewBuilder private func menu(for ids: Set<SearchResult.ID>) -> some View {
-        let items = model.results.filter { ids.contains($0.id) }
-        let users = Array(Set(items.map(\.user))).sorted()
-        let online = model.connection.isConnected
-        Button(items.count > 1 ? "Download \(items.count) Files" : "Download") { download(ids) }
-            .disabled(items.isEmpty || !online)
-        if let first = items.first {
-            Button("Download Entire Folder") {
-                Task { await model.requestFolderDownload(user: first.user, folder: first.folder) }
-            }
-            .disabled(!online)
-        }
-        Divider()
-        if users.count == 1, let user = users.first {
-            Button("Browse \(user)’s Files") { navigator.browse(user, model: model) }.disabled(!online)
-            Button("Message \(user)") { navigator.message(user) }
-            Button("Get Info for \(user)") { navigator.showProfile(user) }
-            Button("Add \(user) to Users") { Task { await model.bookmark(user) } }
-                .disabled(model.users.contains { $0.username == user })
-            Divider()
-        }
-        Button("Copy Path") {
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(items.map(\.file.path).joined(separator: "\n"), forType: .string)
-        }
-        .disabled(items.isEmpty)
+    /// Reveal the first few peers' folders once per search so results are readable without clicking.
+    private func autoExpand() {
+        guard let token = model.searchToken, autoExpandedToken != token, !hierarchy.users.isEmpty else { return }
+        autoExpandedToken = token
+        expandedUsers.formUnion(hierarchy.users.prefix(3).map(\.id))
     }
 }
