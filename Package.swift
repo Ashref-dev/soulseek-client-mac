@@ -4,7 +4,7 @@ import PackageDescription
 let package = Package(
     name: "Arpeggio",
     platforms: [.macOS("27.0")],
-    products: [.executable(name: "Arpeggio", targets: ["Arpeggio"]), .library(name: "SoulseekCore", targets: ["SoulseekCore"]), .executable(name: "ArpeggioFixture", targets: ["ArpeggioFixture"])],
+    products: [.executable(name: "Arpeggio", targets: ["Arpeggio"]), .library(name: "SoulseekCore", targets: ["SoulseekCore"]), .executable(name: "ArpeggioFixture", targets: ["ArpeggioFixture"]), .executable(name: "ArpeggioLive", targets: ["ArpeggioLive"])],
     targets: [
         .systemLibrary(name: "CZlib"),
         .systemLibrary(name: "CSQLite"),
@@ -16,6 +16,7 @@ let package = Package(
         .executableTarget(name: "Arpeggio", dependencies: ["ArpeggioServices"]),
         .target(name: "ProtocolFixtures", dependencies: ["SoulseekCore"]),
         .executableTarget(name: "ArpeggioFixture", dependencies: ["ArpeggioServices", "ProtocolFixtures"], path: "Tools/Fixture"),
+        .executableTarget(name: "ArpeggioLive", dependencies: ["ArpeggioServices"], path: "Tools/Live"),
         .testTarget(name: "CoreTests", dependencies: ["SoulseekCore", "Persistence", "ShareIndexer", "TransferEngine", "ArpeggioServices", "ProtocolFixtures"])
     ]
 )
