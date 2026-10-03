@@ -1,9 +1,11 @@
 import Foundation
 
 public struct AppSettings: Codable, Sendable {
+    public static let soulseekHost = "server.slsknet.org"
+    public static let soulseekPort: UInt16 = 2242
     public var username = ""
-    public var server = "server.slsknet.org"
-    public var port: UInt16 = 2242
+    public var server = Self.soulseekHost
+    public var port: UInt16 = Self.soulseekPort
     public var listeningPort: UInt16 = 2234
     public var downloadDirectory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads/Arpeggio").path
     public var downloadSlots = 3
@@ -16,6 +18,9 @@ public struct AppSettings: Codable, Sendable {
     public var sharedFolders: [ShareFolder] = []
     public var shareExclusions: [String]?
     public init() {}
+    public var serverEndpoint: String { "\(server):\(port)" }
+    public var isLocalServer: Bool { ["localhost", "127.0.0.1", "::1"].contains(server.lowercased()) }
+    public mutating func useSoulseekServer() { server = Self.soulseekHost; port = Self.soulseekPort }
 }
 
 public struct ShareFolder: Codable, Sendable, Identifiable, Hashable {
