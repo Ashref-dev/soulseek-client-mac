@@ -27,7 +27,7 @@ extension AppModel {
                 for result in incoming {
                     if results.count + buffered.count >= 50_000 { break }
                     if ignored.contains(result.user) { continue }
-                    if resultIDs.insert(result.id).inserted { buffered.append(result) }
+                    if resultIDs.insert(result.id).inserted { buffered.append(result); lastSearchActivity = Date() }
                 }
                 if batchTask == nil, !buffered.isEmpty {
                     let revision = searchRevision
@@ -108,6 +108,7 @@ extension AppModel {
             var trusted = false
             if users.contains(where: { $0.username == user && $0.trusted }) { trusted = await session.peerMatchesServerAddress(user) }
             let files = await shareIndex.search(query, allowPrivate: trusted, configuredFolders: currentShareFolders)
+            recordReceivedSearch(user: user, query: query, results: files.count)
             guard !files.isEmpty else { return }
             do {
                 let payload = try PeerCodec.searchReply(user: activeAccount, token: token, files: files,
@@ -139,9 +140,7 @@ extension AppModel {
             let library = ignored ? [:] : await shareIndex.library(allowPrivate: trusted, configuredFolders: currentShareFolders)
             try await session.peerSend(user: user, code: 5, payload: PeerCodec.libraryReply(library))
         case 15:
-            var writer = WireWriter(); writer.string("Shared with Arpeggio."); writer.byte(0)
-            writer.uint(UInt32(settings.uploadSlots)); writer.uint(UInt32(transfers.filter { $0.upload && $0.status == .queued }.count)); writer.byte(1)
-            try await session.peerSend(user: user, code: 16, payload: writer.data)
+            try await session.peerSend(user: user, code: 16, payload: userInfoReply())
         case 36:
             var reader = WireReader(payload); let token = try reader.uint(); let folder = try reader.string()
             let library = ignored ? [:] : await shareIndex.library(allowPrivate: trusted, configuredFolders: currentShareFolders)
@@ -164,25 +163,23 @@ extension AppModel {
             await download(files.map { SearchResult(user: user, file: $0, freeSlot: false, speed: 0, queue: 0) })
         case 43:
             var reader = WireReader(payload); let path = try reader.string()
-            if !ignored, let file = await shareIndex.resolve(path, allowPrivate: trusted, configuredFolders: currentShareFolders) {
-                await transferEngine.queueUpload(user: user, file: file.file, localURL: file.localURL)
-            } else {
-                var writer = WireWriter(); writer.string(path); writer.string("File not shared.")
-                try await session.peerSend(user: user, code: 50, payload: writer.data)
-            }
+            let file = ignored ? nil : await shareIndex.resolve(path, allowPrivate: trusted, configuredFolders: currentShareFolders)
+            if let file, await transferEngine.queueUpload(user: user, file: file.file, localURL: file.localURL) { return }
+            var writer = WireWriter(); writer.string(path); writer.string(file == nil ? "File not shared." : "Too many files")
+            try await session.peerSend(user: user, code: 50, payload: writer.data)
         case 40:
             var reader = WireReader(payload)
             let direction = try reader.uint()
             guard direction == 0 else { try await transferEngine.peerMessage(user: user, code: code, payload: payload); return }
             let token = try reader.uint(); let path = try reader.string()
             var response = WireWriter(); response.uint(token); response.byte(0)
-            if !ignored, let file = await shareIndex.resolve(path, allowPrivate: trusted, configuredFolders: currentShareFolders) {
-                await transferEngine.queueUpload(user: user, file: file.file, localURL: file.localURL, start: false)
+            let file = ignored ? nil : await shareIndex.resolve(path, allowPrivate: trusted, configuredFolders: currentShareFolders)
+            if let file, await transferEngine.queueUpload(user: user, file: file.file, localURL: file.localURL, start: false) {
                 response.string("Queued")
                 try await session.peerSend(user: user, code: 41, payload: response.data)
                 await transferEngine.startQueuedUploads()
             } else {
-                response.string("File not shared.")
+                response.string(file == nil ? "File not shared." : "Too many files")
                 try await session.peerSend(user: user, code: 41, payload: response.data)
             }
         default: try await transferEngine.peerMessage(user: user, code: code, payload: payload)

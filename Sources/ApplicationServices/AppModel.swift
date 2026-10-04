@@ -29,6 +29,7 @@ public final class AppModel {
     public var sharedCount = 0
     public var sharedBytes: UInt64 = 0
     public var shareErrors: [String] = []
+    public internal(set) var shareSummaries: [String: ShareRootSummary] = [:]
     public var error: String?
     public var diagnostics: [String] = []
     public var userDescriptions: [String: String] = [:]
@@ -39,6 +40,17 @@ public final class AppModel {
     public var history: [SearchHistory] = []
     public var unread: Set<String> = []
     public var activeConversation: String?
+    public var notice: Notice?
+    public internal(set) var downloadIndex: [String: Transfer] = [:]
+    public internal(set) var awayNow = false
+    public internal(set) var profilePicture: Data?
+    public internal(set) var statistics = TransferStatistics()
+    public internal(set) var receivedSearches: [ReceivedSearch] = []
+    public internal(set) var receivedSearchTotal = 0
+    public internal(set) var portMapping = PortMappingStatus.idle
+    public internal(set) var update: UpdateState = .idle
+    public internal(set) var menuBarExtraVisible = true
+    public let playback = Playback()
     public let session: SoulseekSession
     public let database: Database
     public let shareIndex: ShareIndex
@@ -51,6 +63,8 @@ public final class AppModel {
     @ObservationIgnored var buffered: [SearchResult] = []
     @ObservationIgnored var resultIDs: Set<String> = []
     @ObservationIgnored var searchRevision: UInt64 = 0
+    @ObservationIgnored var searchStopTask: Task<Void, Never>?
+    @ObservationIgnored var lastSearchActivity = Date()
     @ObservationIgnored var wishlistTokens: [UInt32: String] = [:]
     @ObservationIgnored var wishlistSeconds: UInt32 = 0
     @ObservationIgnored var intentionallyOffline = true
@@ -61,6 +75,20 @@ public final class AppModel {
     @ObservationIgnored var notificationDates: [String: Date] = [:]
     @ObservationIgnored var loginRevision: UInt64 = 0
     @ObservationIgnored var reconnectAllowed = false
+    @ObservationIgnored let credentials = CredentialWrites()
+    @ObservationIgnored var playbackRevision: UInt64 = 0
+    @ObservationIgnored var autoAway = false
+    @ObservationIgnored var idleTask: Task<Void, Never>?
+    @ObservationIgnored var statisticsSeen: [String: TransferStatistics.Progress] = [:]
+    @ObservationIgnored var statisticsBaselined = false
+    @ObservationIgnored var statisticsDirty = false
+    @ObservationIgnored var statisticsTask: Task<Void, Never>?
+    @ObservationIgnored var receivedBuffer: [ReceivedSearch] = []
+    @ObservationIgnored var receivedFlushTask: Task<Void, Never>?
+    @ObservationIgnored var portMapper: PortMapper?
+    @ObservationIgnored var updateTask: Task<Void, Never>?
+    @ObservationIgnored var updateRevision: UInt64 = 0
+    @ObservationIgnored var installingUpdate = false
     @ObservationIgnored var credentialLookup: @Sendable (String) async throws -> String = { username in
         try await Task.detached(priority: .utility) { try Keychain.password(for: username) ?? "" }.value
     }
@@ -73,8 +101,9 @@ public final class AppModel {
     @ObservationIgnored var watchedPaths: [String] = []
     public let dataDirectory: URL
 
+    static var defaultDataDirectory: URL { FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Arpeggio") }
     public init(dataDirectory: URL? = nil) throws {
-        let root = dataDirectory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Arpeggio")
+        let root = dataDirectory ?? Self.defaultDataDirectory
         self.dataDirectory = root
         database = try Database(url: root.appendingPathComponent("arpeggio.sqlite"))
         session = SoulseekSession(); shareIndex = ShareIndex()
@@ -90,8 +119,21 @@ public final class AppModel {
             history = try await database.all(SearchHistory.self, collection: "history")
             for library in try await database.all(RemoteLibrary.self, collection: "libraries", limit: 10) { libraries[library.user] = library }
             await configureTransfers()
+            await transferEngine.setPreviewRoot(dataDirectory == Self.defaultDataDirectory ? Self.previewDirectory() : dataDirectory.appendingPathComponent("Previews", isDirectory: true))
             try await transferEngine.restore()
+            await transferEngine.purgePreviewCache()
+            await loadStatistics(history: await transferEngine.snapshot())
         } catch { self.error = error.localizedDescription }
+        loadProfilePicture()
+        awayNow = settings.isAway
+        menuBarExtraVisible = settings.showsMenuBarIcon
+        startIdleMonitor()
+        statisticsTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(20)) } catch { return }
+                await self?.saveStatistics()
+            }
+        }
         eventTask = Task { [weak self, session] in
             for await envelope in session.events {
                 guard let self, !Task.isCancelled else { return }
@@ -104,11 +146,18 @@ public final class AppModel {
                 guard let self else { return }
                 let previous = Set(self.transfers.filter { $0.status == .completed }.map(\.id))
                 self.transfers = transfers
-                let finished = transfers.filter { !$0.upload && $0.status == .completed && !previous.contains($0.id) }
+                self.ingestStatistics(transfers)
+                self.indexDownloads(transfers)
+                self.playback.refresh(transfers)
+                let finished = transfers.filter { !$0.upload && !$0.isPreview && $0.status == .completed && !previous.contains($0.id) }
                 if let first = finished.first { await self.notify(key: "downloads", title: "Download finished", text: first.file.name, minimumInterval: 5) }
+                if !finished.isEmpty, self.settings.autoClearDownloads == true, self.playback.item?.transferID.map({ id in finished.contains { $0.id == id } }) != true {
+                    Task { await transferEngine.clearFinished(upload: false) }
+                }
             }
         }
         await rescanShares()
+        scheduleUpdateChecks()
         await transferEngine.setUploadAuthorizer { [weak self] user, file, url in
             guard let self else { return false }
             return await self.authorizeUpload(user: user, file: file, url: url)
@@ -126,6 +175,7 @@ public final class AppModel {
         do {
             await transferEngine.revalidateUploads()
             try await database.put(settings, collection: "settings", id: "main")
+            if menuBarExtraVisible != settings.showsMenuBarIcon { menuBarExtraVisible = settings.showsMenuBarIcon }
             await configureTransfers()
             if settings.sharedFolders != indexedFolders || (settings.shareExclusions ?? []) != indexedExclusions { await rescanShares() }
             await transferEngine.revalidateUploads()
@@ -138,18 +188,24 @@ public final class AppModel {
     func configureTransfers() async {
         await transferEngine.configure(root: URL(fileURLWithPath: settings.downloadDirectory), downloads: settings.downloadSlots,
                                        uploads: settings.uploadSlots, downloadLimitKB: settings.downloadLimitKB ?? 0,
-                                       uploadLimitKB: settings.uploadLimitKB ?? 0)
+                                       uploadLimitKB: settings.uploadLimitKB ?? 0, layout: settings.downloadLayout,
+                                       uploadQueueLimit: settings.uploadQueueLimit)
     }
     public func shutdown() async {
         guard !shuttingDown else { return }; shuttingDown = true
         intentionallyOffline = true; loginRevision &+= 1
         reconnectTask?.cancel(); reconnectTask = nil; wishlistTask?.cancel(); wishlistTask = nil
-        batchTask?.cancel(); shareWatchTask?.cancel(); shareScanTask?.cancel()
+        batchTask?.cancel(); searchStopTask?.cancel(); shareWatchTask?.cancel(); shareScanTask?.cancel()
+        idleTask?.cancel(); statisticsTask?.cancel(); updateTask?.cancel(); receivedFlushTask?.cancel()
+        await abandonCurrentPreview(); playback.stop()
+        await removePortMapping()
         shareChangeTask?.cancel(); shareWatcher?.close(); shareWatcher = nil
         await session.shutdown()
         await eventTask?.value
         await transferEngine.shutdown()
         transferTask?.cancel(); await transferTask?.value
+        await transferEngine.purgePreviewCache()
+        statisticsDirty = true; await saveStatistics()
         _ = await shareScanTask?.value
         do { try await database.put(settings, collection: "settings", id: "main") } catch { log(error.localizedDescription) }
         await database.close()
@@ -174,13 +230,16 @@ public final class AppModel {
             guard revision == loginRevision else { return }
             messages = try await database.all(ChatMessage.self, collection: "messages").filter { $0.account == activeAccount }.sorted { $0.date < $1.date }
             guard revision == loginRevision else { return }
+            let credentialGeneration = await credentials.generation
             await saveSettings()
             try await session.send(code: 64)
             try await session.send(code: 92)
             await publishShares()
             for user in users { try await watchUser(user.username) }
-            if remember {
-                do { try await Task.detached(priority: .utility) { try Keychain.save(password: password, for: configuration.username) }.value }
+            await applyPresence()
+            mapListeningPort()
+            if remember, revision == loginRevision, !shuttingDown {
+                do { try await credentials.save(password: password, for: configuration.username, ifGeneration: credentialGeneration) }
                 catch { self.error = "Signed in, but couldn’t save the password in Keychain. You’ll need to enter it again when reconnecting." }
             }
             await requestNotifications()
@@ -191,12 +250,29 @@ public final class AppModel {
         do { return try await credentialLookup(username) }
         catch { self.error = error.localizedDescription; return "" }
     }
+    public func connectAtLaunch() async {
+        guard settings.connectsAutomatically, !settings.username.isEmpty, connection == .offline, !shuttingDown else { return }
+        let account = (settings.username, settings.server, settings.port, loginRevision)
+        let password = await savedPassword()
+        guard !password.isEmpty, connection == .offline, !shuttingDown, settings.connectsAutomatically,
+              account == (settings.username, settings.server, settings.port, loginRevision) else { return }
+        await login(password: password, remember: false)
+    }
+    public func signOut() async {
+        let user = settings.username
+        await disconnect()
+        do { try await credentials.delete(for: user) }
+        catch { self.error = error.localizedDescription }
+        settings.username = ""; activeAccount = ""; messages = []; unread = []
+        await saveSettings()
+    }
     public func disconnect() async {
         loginRevision &+= 1
         activeSessionGeneration = nil
         intentionallyOffline = true; reconnectAllowed = false
         reconnectTask?.cancel(); reconnectTask = nil; wishlistTask?.cancel(); wishlistTask = nil
         await session.disconnect(); await transferEngine.setConnected(false)
+        await removePortMapping()
     }
     public func download(_ items: [SearchResult]) async {
         do { try await transferEngine.enqueue(items) } catch { self.error = error.localizedDescription }
@@ -227,6 +303,20 @@ public final class AppModel {
     }
     func log(_ text: String) { diagnostics.append(text); diagnostics = Array(diagnostics.suffix(200)) }
     func watchUser(_ user: String) async throws { var writer = WireWriter(); writer.string(user); try await session.send(code: 5, payload: writer.data) }
+}
+
+/// Serializes Keychain writes so a save from a sign-in that started earlier can't recreate a password
+/// that Sign Out has since deleted.
+actor CredentialWrites {
+    private(set) var generation: UInt64 = 0
+    func save(password: String, for user: String, ifGeneration expected: UInt64) throws {
+        guard generation == expected else { return }
+        try Keychain.save(password: password, for: user)
+    }
+    func delete(for user: String) throws {
+        generation &+= 1
+        try Keychain.delete(for: user)
+    }
 }
 
 public struct RoomSummary: Identifiable, Sendable {

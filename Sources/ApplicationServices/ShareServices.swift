@@ -1,6 +1,7 @@
 import Foundation
 import SoulseekCore
 import ShareIndexer
+import Persistence
 
 extension AppModel {
     public func rescanShares() async {
@@ -19,6 +20,7 @@ extension AppModel {
             sharedCount = count.0; sharedBytes = count.1
             sharedLibrary = await shareIndex.library(allowPrivate: true, configuredFolders: currentShareFolders)
             shareErrors = await shareIndex.errors
+            shareSummaries = await shareIndex.summaries
             indexedFolders = folders; indexedExclusions = exclusions
             do { try await database.put(RemoteLibrary(user: "local", folders: sharedLibrary), collection: "share-index", id: "local") }
             catch { self.error = error.localizedDescription }
@@ -45,6 +47,30 @@ extension AppModel {
                 }
             }
         } catch { log("File watching unavailable. Automatic rescans will run every two minutes.") }
+    }
+
+    public func share(_ urls: [URL]) async {
+        let existing = Set(settings.sharedFolders.map(\.path))
+        let added = urls.map(\.standardizedFileURL.path).filter { !existing.contains($0) }
+        guard !added.isEmpty else { return }
+        settings.sharedFolders.append(contentsOf: added.map { ShareFolder(path: $0) })
+        await saveSettings()
+    }
+
+    public func unshare(_ folder: ShareFolder) async {
+        settings.sharedFolders.removeAll { $0.path == folder.path }
+        await saveSettings()
+    }
+
+    public func setTrustedOnly(_ folder: ShareFolder, _ trustedOnly: Bool) async {
+        guard let index = settings.sharedFolders.firstIndex(where: { $0.path == folder.path }) else { return }
+        settings.sharedFolders[index].buddyOnly = trustedOnly
+        await saveSettings()
+    }
+
+    public static var musicFolder: URL? {
+        let url = FileManager.default.urls(for: .musicDirectory, in: .userDomainMask).first
+        return url.flatMap { FileManager.default.fileExists(atPath: $0.path) ? $0 : nil }
     }
 
     var currentShareFolders: [(URL, Bool)] { settings.sharedFolders.map { (URL(fileURLWithPath: $0.path), $0.buddyOnly) } }

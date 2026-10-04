@@ -7,12 +7,21 @@ public struct IndexedFile: Sendable {
     public let localURL: URL
     public let buddyOnly: Bool
     public let modified: Date?
+    let searchKey: String
+}
+
+public struct ShareRootSummary: Sendable, Equatable {
+    public var files = 0
+    public var bytes: UInt64 = 0
+    public var audioFiles = 0
+    public var folders = 0
 }
 
 public actor ShareIndex {
     private var files: [String: IndexedFile] = [:]
     private var scanRevision: UInt64 = 0
     public private(set) var errors: [String] = []
+    public private(set) var summaries: [String: ShareRootSummary] = [:]
     public init() {}
     public func scan(folders: [(URL, Bool)], exclusions: [String] = []) async -> (Int, UInt64) {
         scanRevision &+= 1; let revision = scanRevision
@@ -20,8 +29,12 @@ public actor ShareIndex {
         errors = []
         var total: UInt64 = 0
         var processed = 0
+        var summaries: [String: ShareRootSummary] = [:]
         let manager = FileManager.default
         for (root, privateShare) in folders {
+            var summary = ShareRootSummary()
+            var folderNames = Set<String>()
+            defer { summary.folders = folderNames.count; summaries[root.path] = summary }
             let resolved = root.resolvingSymlinksInPath().standardizedFileURL
             let keys: [URLResourceKey] = [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey, .isReadableKey, .contentModificationDateKey]
             guard let enumerator = manager.enumerator(at: resolved, includingPropertiesForKeys: keys,
@@ -50,13 +63,17 @@ public actor ShareIndex {
                     if let previous = files[path], previous.file.size == size, previous.modified == values.contentModificationDate {
                         attributes = previous.file.attributes
                     } else { attributes = AudioMetadata.read(canonical, size: size) }
-                    next[path] = IndexedFile(file: SharedFile(path: path, size: size, attributes: attributes), localURL: canonical,
-                                             buddyOnly: privateShare, modified: values.contentModificationDate)
+                    let file = SharedFile(path: path, size: size, attributes: attributes)
+                    next[path] = IndexedFile(file: file, localURL: canonical, buddyOnly: privateShare,
+                                             modified: values.contentModificationDate, searchKey: path.lowercased())
                     total += size
+                    summary.files += 1; summary.bytes += size; folderNames.insert(file.folder)
+                    if AudioMetadata.isAudio(name: canonical.lastPathComponent) { summary.audioFiles += 1 }
                 } catch { errors.append("\(url.lastPathComponent): \(error.localizedDescription)") }
             }
         }
         files = next
+        self.summaries = summaries
         return (files.count, total)
     }
     public func library(allowPrivate: Bool = false, configuredFolders: [(URL, Bool)]? = nil) -> [String: [SharedFile]] {
@@ -67,8 +84,8 @@ public actor ShareIndex {
         guard !terms.isEmpty else { return [] }
         return Array(files.values.lazy.filter { item in
             self.allowed(item, privateAccess: allowPrivate, folders: configuredFolders) && terms.allSatisfy { term in
-                if term.hasPrefix("-") { return !item.file.path.lowercased().contains(term.dropFirst()) }
-                return item.file.path.lowercased().contains(term.replacingOccurrences(of: "*", with: ""))
+                if term.hasPrefix("-") { return !item.searchKey.contains(term.dropFirst()) }
+                return item.searchKey.contains(term.replacingOccurrences(of: "*", with: ""))
             }
         }.prefix(limit).map(\.file))
     }

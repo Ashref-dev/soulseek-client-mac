@@ -17,10 +17,50 @@ public struct AppSettings: Codable, Sendable {
     public var notifications = true
     public var sharedFolders: [ShareFolder] = []
     public var shareExclusions: [String]?
+    public var autoConnect: Bool?
+    public var searchIdleSeconds: Int?
+    public var onboardingVersion: Int?
+    public var userFolders: Bool?
+    public var fullRemotePaths: Bool?
+    public var away: Bool?
+    public var awayWhenIdle: Bool?
+    public var idleMinutes: Int?
+    public var profileDescription: String?
+    public var portMapping: Bool?
+    public var menuBarIcon: Bool?
+    public var hideDockWhenClosed: Bool?
+    public var queuedUploadsPerUser: Int?
+    public var autoClearDownloads: Bool?
+    public var checkForUpdates: Bool?
     public init() {}
+    public var connectsAutomatically: Bool { autoConnect ?? true }
+    public var downloadLayout: DownloadLayout { DownloadLayout(userFolders: userFolders ?? false, fullPaths: fullRemotePaths ?? false) }
+    public var isAway: Bool { away ?? false }
+    public var goesAwayWhenIdle: Bool { awayWhenIdle ?? true }
+    public var idleAwayMinutes: Int { min(120, max(1, idleMinutes ?? 10)) }
+    public var mapsPorts: Bool { portMapping ?? true }
+    public var showsMenuBarIcon: Bool { menuBarIcon ?? true }
+    public var uploadQueueLimit: Int { max(0, queuedUploadsPerUser ?? 200) }
+    public var checksForUpdates: Bool { checkForUpdates ?? true }
+    /// Seconds without new results before a search ends; 0 keeps it open until stopped.
+    public var searchAutoStopSeconds: Int { max(0, searchIdleSeconds ?? 15) }
+    /// Bounds every field that becomes a number on the wire or a loop count, for settings read from files.
+    public var isValid: Bool {
+        (1...20).contains(downloadSlots) && (1...20).contains(uploadSlots) && port > 0 && listeningPort > 0 &&
+        (0...1_000_000).contains(downloadLimitKB ?? 0) && (0...1_000_000).contains(uploadLimitKB ?? 0) &&
+        (0...10_000).contains(queuedUploadsPerUser ?? 0) && (1...120).contains(idleMinutes ?? 10) &&
+        (0...120).contains(searchIdleSeconds ?? 15) && !downloadDirectory.isEmpty && username.utf8.count <= 30 &&
+        (profileDescription?.count ?? 0) <= 4000
+    }
     public var serverEndpoint: String { "\(server):\(port)" }
     public var isLocalServer: Bool { ["localhost", "127.0.0.1", "::1"].contains(server.lowercased()) }
     public mutating func useSoulseekServer() { server = Self.soulseekHost; port = Self.soulseekPort }
+}
+
+public struct DownloadLayout: Sendable, Equatable {
+    public var userFolders: Bool
+    public var fullPaths: Bool
+    public init(userFolders: Bool = false, fullPaths: Bool = false) { self.userFolders = userFolders; self.fullPaths = fullPaths }
 }
 
 public struct ShareFolder: Codable, Sendable, Identifiable, Hashable {

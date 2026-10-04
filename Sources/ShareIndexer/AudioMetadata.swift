@@ -2,6 +2,8 @@ import AVFoundation
 import Foundation
 
 enum AudioMetadata {
+    static let extensions: Set<String> = ["flac", "wav", "aiff", "aif", "mp3", "m4a", "aac", "alac", "ogg", "opus", "ape", "wv"]
+    static func isAudio(name: String) -> Bool { extensions.contains((name as NSString).pathExtension.lowercased()) }
     static func read(_ url: URL, size: UInt64) -> [UInt32: UInt32] {
         let ext = url.pathExtension.lowercased()
         guard ["flac", "wav", "aiff", "aif", "mp3", "m4a", "aac", "alac"].contains(ext),
