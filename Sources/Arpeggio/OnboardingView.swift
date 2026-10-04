@@ -111,7 +111,8 @@ struct OnboardingView: View {
                             Spacer()
                             if let summary = model.shareSummaries[folder.path] {
                                 Text("\(summary.files.formatted()) files · \(Format.bytes(summary.bytes))").font(.caption).foregroundStyle(.secondary).monospacedDigit()
-                            } else if model.indexing {
+            } else if model.indexing {
+                Text(model.shareProgress.description).font(.caption).foregroundStyle(.secondary).lineLimit(3)
                                 ProgressView().controlSize(.small)
                             }
                             Button { Task { await model.unshare(folder) } } label: { Image(systemName: "minus.circle") }

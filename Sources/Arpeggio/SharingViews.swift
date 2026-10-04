@@ -123,7 +123,7 @@ struct SharedFilesView: View {
     }
 
     private var statusLine: String {
-        if model.indexing { return "Indexing your folders…" }
+        if model.indexing { return model.shareProgress.description }
         if model.settings.sharedFolders.isEmpty { return "Add a folder so people can browse and download from you." }
         if !model.connection.isConnected { return "Indexed. Visible to others once you’re connected." }
         return "Visible to everyone on Soulseek. Changes in these folders are picked up automatically."

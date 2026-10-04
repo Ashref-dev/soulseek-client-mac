@@ -368,6 +368,7 @@ private struct SharingSettings: View {
                     .foregroundStyle(.secondary)
             }
             Section("Index") {
+                if model.indexing { Text(model.shareProgress.description).font(.caption).foregroundStyle(.secondary).lineLimit(3) }
                 TextField("Exclude names (comma-separated patterns)", text: Binding(get: { (model.settings.shareExclusions ?? []).joined(separator: ", ") }, set: { model.settings.shareExclusions = $0.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty } }))
                     .help("Examples: *.tmp, *.cue, Artwork. Matches file or folder names, case-insensitively.")
                 LabeledContent("Files", value: model.sharedCount.formatted())
