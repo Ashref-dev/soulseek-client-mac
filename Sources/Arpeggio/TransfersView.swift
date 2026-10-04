@@ -221,8 +221,8 @@ struct TransfersView: View {
             else if let url = transfer.localURL { NSWorkspace.shared.activateFileViewerSelecting([url]) }
         }
         .onKeyPress(.space) {
-            guard let url = selected.first?.localURL else { return .ignored }
-            preview = preview == nil ? url : nil
+            guard let transfer = selected.first, PreviewFormat.classify(transfer.file.name) != nil else { return .ignored }
+            previewTransfer(transfer)
             return .handled
         }
     }
@@ -238,8 +238,8 @@ struct TransfersView: View {
             .disabled(!transfers.contains { !$0.status.isFinished })
         Divider()
         let urls = transfers.compactMap(\.localURL)
-        if let playable = transfers.first(where: { $0.status == .completed && $0.file.isAudio && $0.localURL != nil }) {
-            Button("Play", systemImage: "play.fill") { model.play(playable) }
+        if let playable = transfers.first(where: { PreviewFormat.classify($0.file.name) != nil }) {
+            Button("Preview", systemImage: "play.fill") { previewTransfer(playable) }
         }
         Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting(urls) }
             .disabled(urls.isEmpty)
@@ -259,6 +259,12 @@ struct TransfersView: View {
 
     private func isPlaying(_ transfer: Transfer) -> Bool {
         model.playback.isPlaying && model.playback.item?.fileURL?.path == transfer.destination
+    }
+    private func previewTransfer(_ transfer: Transfer) {
+        if transfer.status == .completed, let url = transfer.localURL { model.previewLocal(url, title: transfer.file.name) }
+        else if !upload {
+            Task { await model.listen(to: SearchResult(user: transfer.user, file: transfer.file, freeSlot: false, speed: 0, queue: 0)) }
+        }
     }
 
     private func summary(_ rows: [Transfer]) -> some View {
