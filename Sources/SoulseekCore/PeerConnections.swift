@@ -25,6 +25,9 @@ extension SoulseekSession {
         }
     }
     func report(_ text: String) async { await emit(.diagnostic(text)) }
+    func takePendingPeerMessages(_ user: String) -> [PendingPeerMessage] {
+        (pending.removeValue(forKey: user) ?? []).filter { $0.lease?.isValid != false }
+    }
     func accept(_ socket: TCPConnection, generation attempt: UInt64) async {
         guard attempt == generation else { socket.cancel(); return }
         guard incomingHandshakes < 32 else { socket.cancel(); return }
@@ -97,7 +100,10 @@ extension SoulseekSession {
 #endif
             rendezvous = rendezvous.filter { $0.value.0 != user || $0.value.1 != "P" }
             logger.debug("Peer messaging connection established")
-            for (code, payload) in pending.removeValue(forKey: user) ?? [] { try await connection.send(code: code, payload: payload) }
+            for message in takePendingPeerMessages(user) {
+                do { try await connection.send(code: message.code, payload: message.payload, lease: message.lease) }
+                catch is CancellationError { if message.lease?.isValid != false { throw CancellationError() } }
+            }
             try requireGeneration(attempt)
             peerTasks[user] = Task { await self.readPeer(connection, user: user, generation: attempt) }
         case "F":

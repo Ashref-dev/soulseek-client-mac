@@ -45,11 +45,15 @@ public final class TCPConnection: @unchecked Sendable {
             }
         } onCancel: { self.cancel() }
     }
-    public func send(_ data: Data) async throws {
+    public func send(_ data: Data, lease: SendLease? = nil) async throws {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            connection.send(content: data, completion: .contentProcessed { error in
-                if let error { continuation.resume(throwing: error) } else { continuation.resume() }
-            })
+            let send = { [connection] in
+                connection.send(content: data, completion: .contentProcessed { error in
+                    if let error { continuation.resume(throwing: error) } else { continuation.resume() }
+                })
+            }
+            do { if let lease { try lease.perform(send) } else { send() } }
+            catch { continuation.resume(throwing: error) }
         }
     }
     public func receive(maximum: Int = 65_536, timeout seconds: Int? = nil) async throws -> Data {
@@ -75,8 +79,8 @@ public actor FramedConnection {
     public nonisolated let socket: TCPConnection
     private var buffer = Data()
     public init(_ socket: TCPConnection) { self.socket = socket }
-    public func send(code: UInt32, payload: Data = Data(), narrow: Bool = false) async throws {
-        try await socket.send(WireWriter.frame(code: code, payload: payload, narrow: narrow))
+    public func send(code: UInt32, payload: Data = Data(), narrow: Bool = false, lease: SendLease? = nil) async throws {
+        try await socket.send(WireWriter.frame(code: code, payload: payload, narrow: narrow), lease: lease)
     }
     public func read(narrow: Bool = false, timeout: Int? = nil, peer: Bool = false) async throws -> (UInt32, Data) {
         try await read(narrow: narrow, timeout: timeout, peer: peer, budget: nil, admit: nil)

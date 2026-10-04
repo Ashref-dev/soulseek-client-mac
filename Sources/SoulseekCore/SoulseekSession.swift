@@ -13,7 +13,7 @@ public actor SoulseekSession {
     var peers: [String: FramedConnection] = [:]
     var peerDirections: [String: Bool] = [:]
     var peerTasks: [String: Task<Void, Never>] = [:]
-    var pending: [String: [(UInt32, Data)]] = [:]
+    var pending: [String: [PendingPeerMessage]] = [:]
     var addresses: [String: (String, UInt16)] = [:]
     var addressWaiters: [String: [CheckedContinuation<(String, UInt16), Error>]] = [:]
     var rendezvous: [UInt32: (String, String)] = [:]
@@ -161,7 +161,8 @@ public actor SoulseekSession {
         try await send(code: user != nil ? 42 : wishlist ? 103 : 26, payload: writer.data)
         return id
     }
-    public func peerSend(user: String, code: UInt32, payload: Data = Data()) async throws {
+    public func peerSend(user: String, code: UInt32, payload: Data = Data(), lease: SendLease? = nil) async throws {
+        if let lease, !lease.isValid { throw CancellationError() }
         guard !user.isEmpty, user.utf8.count <= 256 else { throw ProtocolError.invalid("Invalid username.") }
         if code == 4 { expectedLibraries.insert(user) }
         if code == 15 { expectedUserInfo.insert(user) }
@@ -177,10 +178,10 @@ public actor SoulseekSession {
                 self.expectedFolders[user]?.remove(token)
             }
         }
-        if let peer = peers[user] { try await peer.send(code: code, payload: payload); return }
+        if let peer = peers[user] { try await peer.send(code: code, payload: payload, lease: lease); return }
         guard server != nil else { throw ProtocolError.disconnected }
         guard pending.count < 128, pending[user, default: []].count < 100 else { throw ProtocolError.oversized }
-        pending[user, default: []].append((code, payload))
+        pending[user, default: []].append(PendingPeerMessage(code: code, payload: payload, lease: lease))
         guard !connecting.contains(user) else { return }
         connecting.insert(user)
         let attempt = generation
