@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import SoulseekCore
 
 public enum PortMappingStatus: Sendable, Equatable {
     case idle, disabled, mapping
@@ -17,21 +18,26 @@ actor PortMapper {
 
     let port: UInt16
     private(set) var method: Method?
+    private(set) var renewalSeconds: Double = 1800
     static let lease: UInt32 = 3600
 
     init(port: UInt16) { self.port = port }
 
-    func map() async -> PortMappingStatus {
-        if let gateway = await Self.defaultGateway(), let external = await Self.natPMP(gateway: gateway, port: port, lifetime: Self.lease) {
+    func map(natPMP: Bool = true, upnp: Bool = true) async -> PortMappingStatus {
+        guard port > 0 else { return .unavailable("Invalid listening port.") }
+        guard natPMP || upnp else { return .disabled }
+        if natPMP, let gateway = await Self.defaultGateway(), let external = await Self.natPMP(gateway: gateway, port: port, lifetime: Self.lease) {
             method = .natPMP(gateway: gateway)
-            return .mapped(method: "NAT-PMP", port: external, externalAddress: await Self.natPMPAddress(gateway: gateway))
+            renewalSeconds = Double(external.lifetime) / 2
+            return .mapped(method: "NAT-PMP", port: external.port, externalAddress: await Self.natPMPAddress(gateway: gateway))
         }
-        if let device = await Self.discoverUPnP(), await Self.upnpAdd(device: device, port: port) {
+        if upnp, let device = await Self.discoverUPnP(), await Self.upnpAdd(device: device, port: port) {
             method = .upnp(control: device.control, service: device.service, client: device.client)
             return .mapped(method: "UPnP", port: port, externalAddress: await Self.upnpExternalAddress(device: device))
         }
         method = nil
-        return .unavailable("No router answered NAT-PMP or UPnP. Forward TCP port \(port) manually for the best connectivity.")
+        let protocols = [natPMP ? "NAT-PMP" : nil, upnp ? "UPnP" : nil].compactMap { $0 }.joined(separator: " or ")
+        return .unavailable("No valid mapping acknowledgment from \(protocols). This does not prove your router is incompatible. Check firewall, VPN and router settings, or forward TCP port \(port) manually.")
     }
 
     func unmap() async {
@@ -47,18 +53,32 @@ actor PortMapper {
 
     // MARK: NAT-PMP (RFC 6886)
 
-    static func natPMP(gateway: String, port: UInt16, lifetime: UInt32) async -> UInt16? {
+    static func natPMP(gateway: String, port: UInt16, lifetime: UInt32) async -> (port: UInt16, lifetime: UInt32)? {
+        guard port > 0 else { return nil }
         var request = Data([0, 2, 0, 0])
         request.append(contentsOf: port.bigEndianBytes); request.append(contentsOf: (lifetime == 0 ? 0 : port).bigEndianBytes)
         request.append(contentsOf: lifetime.bigEndianBytes)
-        guard let reply = await UDP.exchange(host: gateway, port: 5351, payload: request, expect: 16),
-              reply.count >= 16, reply[1] == 130, reply.uint16(at: 2) == 0 else { return nil }
-        return reply.uint16(at: 10)
+        guard let reply = await UDP.exchange(host: gateway, port: 5351, payload: request, expect: 16) else { return nil }
+        if lifetime > 0, reply.count == 16, reply[0] == 0, reply[1] == 130, reply.uint16(at: 2) == 0,
+           reply.uint16(at: 8) == port, reply.uint16(at: 10) != port {
+            var deletion = Data([0, 2, 0, 0]); deletion.append(contentsOf: port.bigEndianBytes)
+            deletion.append(contentsOf: UInt16(0).bigEndianBytes); deletion.append(contentsOf: UInt32(0).bigEndianBytes)
+            _ = await UDP.exchange(host: gateway, port: 5351, payload: deletion, expect: 16)
+            return nil
+        }
+        guard validNATPMPReply(reply, port: port, deleting: lifetime == 0) else { return nil }
+        return (reply.uint16(at: 10), reply[12..<16].reduce(UInt32(0)) { ($0 << 8) | UInt32($1) })
+    }
+    static func validNATPMPReply(_ reply: Data, port: UInt16, deleting: Bool) -> Bool {
+        guard port > 0, reply.count == 16, reply[0] == 0, reply[1] == 130, reply.uint16(at: 2) == 0,
+              reply.uint16(at: 8) == port, reply.uint16(at: 10) == (deleting ? 0 : port) else { return false }
+        let lifetime = reply[12..<16].reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
+        return deleting ? lifetime == 0 : lifetime > 0
     }
 
     static func natPMPAddress(gateway: String) async -> String? {
         guard let reply = await UDP.exchange(host: gateway, port: 5351, payload: Data([0, 0]), expect: 12),
-              reply.count >= 12, reply[1] == 128, reply.uint16(at: 2) == 0 else { return nil }
+              reply.count == 12, reply[0] == 0, reply[1] == 128, reply.uint16(at: 2) == 0 else { return nil }
         return reply[8..<12].map(String.init).joined(separator: ".")
     }
 
@@ -203,7 +223,7 @@ enum UDP {
             guard withUnsafeMutablePointer(to: &local, { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(fd, $0, &length) } }) == 0 else { return nil }
             var buffer = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
             guard inet_ntop(AF_INET, &local.sin_addr, &buffer, socklen_t(INET_ADDRSTRLEN)) != nil else { return nil }
-            return String(cString: buffer)
+            return String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
         }
     }
 
@@ -229,7 +249,9 @@ enum UDP {
             if count > 0 {
                 var text = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
                 inet_ntop(AF_INET, &sender.sin_addr, &text, socklen_t(INET_ADDRSTRLEN))
-                replies.append((Data(buffer[0..<count]), String(cString: text)))
+                let senderHost = String(decoding: text.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+                if !all, (senderHost != host || UInt16(bigEndian: sender.sin_port) != port) { continue }
+                replies.append((Data(buffer[0..<count]), senderHost))
                 if !all { break }
             }
         }
@@ -270,25 +292,26 @@ private extension String {
 extension AppModel {
     func mapListeningPort() {
         guard settings.mapsPorts else { portMapping = .disabled; return }
+        guard !settings.isLocalServer else { portMapping = .unavailable("Local fixture connection. Router discovery skipped; external reachability unverified."); return }
         let port = settings.listeningPort
         let revision = loginRevision
         portMapping = .mapping
         Task { [weak self] in
             guard let self else { return }
             let mapper = PortMapper(port: port)
-            let status = await mapper.map()
+            let status = await mapper.map(natPMP: self.settings.usesNATPMP, upnp: self.settings.usesUPnP)
             guard revision == self.loginRevision, self.connection == .connected else { await mapper.unmap(); return }
             self.portMapper = mapper; self.portMapping = status
             if case .mapped(let method, let external, let address) = status {
-                self.log("Port \(port) opened on the router with \(method) (external \(address ?? "address unknown"):\(external)).")
-                self.scheduleMappingRenewal(revision: revision)
+                self.log("Router acknowledged \(method) mapping (external \(address ?? "address unknown"):\(external)). External reachability is unverified.")
+                self.scheduleMappingRenewal(revision: revision, seconds: await mapper.renewalSeconds)
             } else if case .unavailable(let reason) = status { self.log(reason) }
         }
     }
 
-    private func scheduleMappingRenewal(revision: UInt64) {
+    private func scheduleMappingRenewal(revision: UInt64, seconds: Double) {
         Task { [weak self] in
-            try? await Task.sleep(for: .seconds(Double(PortMapper.lease) / 2))
+            try? await Task.sleep(for: .seconds(seconds))
             guard let self, revision == self.loginRevision, self.connection == .connected else { return }
             self.mapListeningPort()
         }
