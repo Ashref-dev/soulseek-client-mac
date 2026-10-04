@@ -1,8 +1,8 @@
-<p align="center"><img src="docs/cover.jpg" alt="Arpeggio, a native Soulseek client for macOS" width="100%"></p>
+<p align="center"><img src="docs/cover.jpg" alt="Soulseek-Arpeggio, a native Soulseek client for macOS" width="100%"></p>
 
-# Arpeggio
+# Soulseek-Arpeggio
 
-Arpeggio is a native Soulseek client for macOS, written in Swift and SwiftUI. It talks to the Soulseek server and to other people directly, with no wrapper, daemon or web view in between.
+Soulseek-Arpeggio (Arpeggio for short) is a native Soulseek client for macOS, written in Swift and SwiftUI. It talks to the Soulseek server and to other people directly, with no wrapper, daemon or web view in between.
 
 Soulseek is a long-running peer-to-peer network where people share their music libraries with each other. You search everyone who is online, download straight from them, and share your own folders in return.
 
@@ -20,8 +20,8 @@ Soulseek is a long-running peer-to-peer network where people share their music l
 
 ## Install
 
-1. Download `Arpeggio-x.y.z.zip` from the [latest release](https://github.com/Ashref-dev/soulseek-client-mac/releases/latest).
-2. Unzip it and move **Arpeggio** to Applications.
+1. Download `Soulseek-Arpeggio-x.y.z.zip` from the [latest release](https://github.com/Ashref-dev/soulseek-client-mac/releases/latest).
+2. Unzip it and move **Soulseek-Arpeggio** to Applications. Search for "Soulseek" or "Arpeggio" in Spotlight to open it.
 3. Open it. Release builds are signed but not notarized yet, so the first time macOS may refuse to open it. Choose **System Settings > Privacy & Security > Open Anyway**, or Control-click the app and choose **Open**.
 
 Arpeggio needs macOS 27 or later. A welcome guide walks you through signing in and sharing your music folder. There is no separate sign-up on Soulseek: if the username you pick is free, the server registers it the first time you sign in.
@@ -35,12 +35,12 @@ git clone https://github.com/Ashref-dev/soulseek-client-mac.git
 cd soulseek-client-mac
 swift test
 bash scripts/build-app.sh
-open dist/Arpeggio.app
+open dist/Soulseek-Arpeggio.app
 ```
 
 `build-app.sh` signs with the first Apple Development or Developer ID identity in your keychain and falls back to ad-hoc signing. A stable identity matters: macOS ties the saved Keychain password to it, and the updater only accepts releases signed by the same identity. Set `ARPEGGIO_SIGNING_IDENTITY` to choose one explicitly.
 
-Release builds also produce `dist/Arpeggio-x.y.z.zip`. `scripts/release.sh` runs the tests, builds, checks the signature and publishes the version in `Resources/Info.plist` as a GitHub release. Versions follow [semantic versioning](https://semver.org).
+Release builds also produce `dist/Soulseek-Arpeggio-x.y.z.zip`. `scripts/release.sh` runs the tests, builds, checks the signature and publishes the version in `Resources/Info.plist` as a GitHub release. Versions follow [semantic versioning](https://semver.org).
 
 ## Where things live
 
@@ -69,6 +69,8 @@ Release builds also produce `dist/Arpeggio-x.y.z.zip`. `scripts/release.sh` runs
 | `Persistence` | SQLite records and Keychain access |
 | `ArpeggioServices` | App state and coordination: search, sharing, playback, presence, statistics, port mapping, updates |
 | `Arpeggio` | SwiftUI windows, menu bar extra, settings and commands |
+
+The logo is the arpeggio sign from sheet music beside a three-note chord. It is defined once in `Sources/Arpeggio/ArpeggioMark.swift`; the app icon (`scripts/icon`), the menu bar icon and the in-app logo are all drawn from it.
 
 The only dependencies are Apple frameworks plus the system SQLite and zlib. Protocol notes and references are in [docs/PROTOCOL.md](docs/PROTOCOL.md).
 

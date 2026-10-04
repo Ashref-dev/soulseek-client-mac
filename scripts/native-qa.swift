@@ -29,11 +29,11 @@ guard let command = arguments.first else {
 guard AXIsProcessTrusted() else {
     FileHandle.standardError.write(Data("Native QA needs Accessibility permission for the invoking terminal.\n".utf8)); exit(1)
 }
-let defaultBundle = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("dist/Arpeggio.app")
+let defaultBundle = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("dist/Soulseek-Arpeggio.app")
 let expectedBundle = ProcessInfo.processInfo.environment["ARPEGGIO_QA_BUNDLE"].map { URL(fileURLWithPath: $0) }?.resolvingSymlinksInPath() ?? defaultBundle.resolvingSymlinksInPath()
 let candidates = NSRunningApplication.runningApplications(withBundleIdentifier: "tn.ashref.arpeggio").filter { $0.bundleURL?.resolvingSymlinksInPath() == expectedBundle }
 guard candidates.count == 1, let application = candidates.first else {
-    FileHandle.standardError.write(Data("Launch Arpeggio.app first.\n".utf8)); exit(1)
+    FileHandle.standardError.write(Data("Launch Soulseek-Arpeggio.app first.\n".utf8)); exit(1)
 }
 let app = AXUIElementCreateApplication(application.processIdentifier)
 guard let source = CGEventSource(stateID: .privateState) else { exit(1) }

@@ -55,7 +55,8 @@ public enum Updater {
 
     static func parse(_ data: Data) throws -> Release {
         let payload = try JSONDecoder().decode(Payload.self, from: data)
-        guard let asset = payload.assets.first(where: { $0.name.hasPrefix("Arpeggio") && $0.name.hasSuffix(".zip") }) else { throw UpdateError.noAsset }
+        let archives = payload.assets.filter { $0.name.contains("Arpeggio") && $0.name.hasSuffix(".zip") }
+        guard let asset = archives.first(where: { $0.name.hasPrefix("Soulseek-Arpeggio") }) ?? archives.first else { throw UpdateError.noAsset }
         return Release(version: payload.tag_name.trimmingCharacters(in: CharacterSet(charactersIn: "vV")), notes: payload.body ?? "",
                        asset: asset.browser_download_url, page: payload.html_url)
     }
@@ -73,8 +74,10 @@ public enum Updater {
         return !aPre && bPre
     }
 
-    /// Downloads, unpacks and verifies a release next to `current`, then swaps it in place.
-    public static func install(_ release: Release, replacing current: URL, session: URLSession = .shared) async throws {
+    /// Downloads, unpacks and verifies a release next to `current`, then swaps it in place. If the release
+    /// carries a new app name, the installed copy is renamed to match. Returns where the app now lives.
+    @discardableResult
+    public static func install(_ release: Release, replacing current: URL, session: URLSession = .shared) async throws -> URL {
         let parent = current.deletingLastPathComponent()
         guard FileManager.default.isWritableFile(atPath: parent.path) else { throw UpdateError.notWritable }
         let (archive, response) = try await session.download(from: release.asset)
@@ -87,7 +90,11 @@ public enum Updater {
         guard apps.count == 1, let app = apps.first,
               (try? app.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true else { throw UpdateError.unreadable }
         try verify(app, replacing: current)
-        _ = try FileManager.default.replaceItemAt(current, withItemAt: app)
+        let name = app.lastPathComponent
+        let installed = try FileManager.default.replaceItemAt(current, withItemAt: app) ?? current
+        let renamed = parent.appendingPathComponent(name)
+        guard installed.lastPathComponent != name, !FileManager.default.fileExists(atPath: renamed.path) else { return installed }
+        do { try FileManager.default.moveItem(at: installed, to: renamed); return renamed } catch { return installed }
     }
 
     static func verify(_ candidate: URL, replacing current: URL) throws {
@@ -162,9 +169,9 @@ extension AppModel {
         installingUpdate = true; updateRevision &+= 1
         update = .downloading(release)
         do {
-            try await Updater.install(release, replacing: Bundle.main.bundleURL)
+            let installed = try await Updater.install(release, replacing: Bundle.main.bundleURL)
             update = .ready(release)
-            Updater.relaunch(Bundle.main.bundleURL)
+            Updater.relaunch(installed)
             return true
         } catch {
             installingUpdate = false

@@ -7,11 +7,11 @@ VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$ROOT
 NOTES="${1:-}"
 swift test --package-path "$ROOT"
 bash "$ROOT/scripts/build-app.sh" release
-codesign --verify --deep --strict "$ROOT/dist/Arpeggio.app"
-if codesign -dv "$ROOT/dist/Arpeggio.app" 2>&1 | grep -q 'Signature=adhoc'; then
+codesign --verify --deep --strict "$ROOT/dist/Soulseek-Arpeggio.app"
+if codesign -dv "$ROOT/dist/Soulseek-Arpeggio.app" 2>&1 | grep -q 'Signature=adhoc'; then
     printf 'Refusing to publish an ad-hoc signed build: the updater could not verify it.\n' >&2
     exit 1
 fi
 ARGS=(--title "Arpeggio $VERSION")
 if [ -n "$NOTES" ]; then ARGS+=(--notes-file "$NOTES"); else ARGS+=(--generate-notes); fi
-gh release create "v$VERSION" "$ROOT/dist/Arpeggio-$VERSION.zip" "${ARGS[@]}"
+gh release create "v$VERSION" "$ROOT/dist/Soulseek-Arpeggio-$VERSION.zip" "${ARGS[@]}"
