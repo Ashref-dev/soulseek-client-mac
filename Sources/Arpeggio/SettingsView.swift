@@ -178,7 +178,11 @@ private struct AccountSettings: View {
                 TextField("Listening port", value: $model.settings.listeningPort, format: .number.grouping(.never))
                     .help("Other people connect to this TCP port.")
                 Toggle("Open the port on my router automatically", isOn: Binding(get: { model.settings.mapsPorts }, set: { model.settings.portMapping = $0 }))
+                Toggle("Use NAT-PMP", isOn: Binding(get: { model.settings.usesNATPMP }, set: { model.settings.natPMPEnabled = $0 })).disabled(!model.settings.mapsPorts)
+                Toggle("Use UPnP", isOn: Binding(get: { model.settings.usesUPnP }, set: { model.settings.upnpEnabled = $0 })).disabled(!model.settings.mapsPorts)
                 LabeledContent("Router") { portStatus }
+                Button("Check Ports") { Task { await model.checkListeningPort() } }
+                if let check = model.portCheck { Text(check).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
             } header: {
                 Text("Incoming Connections")
             } footer: {
@@ -201,8 +205,8 @@ private struct AccountSettings: View {
         case .disabled: Text("Off").foregroundStyle(.secondary)
         case .mapping: HStack(spacing: 6) { ProgressView().controlSize(.small); Text("Asking the router…") }.foregroundStyle(.secondary)
         case .mapped(let method, let port, let address):
-            Label("Port \(port) open via \(method)\(address.map { " · \($0)" } ?? "")", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
-        case .unavailable: Label("No compatible router found", systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+            Label("Router acknowledged \(method) mapping for \(port)\(address.map { " · \($0)" } ?? ""). External reachability unverified.", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+        case .unavailable(let reason): Text(reason).foregroundStyle(.orange)
         }
     }
 }
