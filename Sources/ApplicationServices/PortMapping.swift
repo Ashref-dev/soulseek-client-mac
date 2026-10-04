@@ -140,7 +140,12 @@ actor PortMapper {
     }(), delegate: NoRedirects(), delegateQueue: nil)
 
     static func fetch(_ url: URL, limit: Int) async -> Data? {
-        guard let (bytes, response) = try? await session.bytes(from: url), (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        await boundedResponse(URLRequest(url: url), limit: limit)
+    }
+    static func boundedResponse(_ request: URLRequest, limit: Int, allowLeaseFault: Bool = false) async -> Data? {
+        guard limit > 0, limit <= 256 * 1024,
+              let (bytes, response) = try? await session.bytes(for: request), let status = (response as? HTTPURLResponse)?.statusCode,
+              status == 200 || (allowLeaseFault && status == 500) else { return nil }
         var data = Data()
         do {
             for try await byte in bytes {
@@ -148,16 +153,19 @@ actor PortMapper {
                 if data.count > limit { return nil }
             }
         } catch { return nil }
+        if status == 500, SOAPResponse.faultCode(data) != 725 { return nil }
         return data
     }
 
     static func upnpAdd(device: UPnPDevice, port: UInt16) async -> Bool {
+        guard port > 0 else { return false }
         for lease in [lease, 0] {
-            let ok = await soap(device, action: "AddPortMapping", arguments: [
+            guard let response = await soap(device, action: "AddPortMapping", arguments: [
                 ("NewRemoteHost", ""), ("NewExternalPort", "\(port)"), ("NewProtocol", "TCP"), ("NewInternalPort", "\(port)"),
                 ("NewInternalClient", device.client), ("NewEnabled", "1"), ("NewPortMappingDescription", "Arpeggio"),
-                ("NewLeaseDuration", "\(lease)")]) != nil
-            if ok { return true }
+                ("NewLeaseDuration", "\(lease)")], allowLeaseFault: lease > 0) else { return false }
+            if SOAPResponse.accepts(Data(response.utf8), action: "AddPortMapping", service: device.service) { return true }
+            guard lease > 0, SOAPResponse.faultCode(Data(response.utf8)) == 725 else { return false }
         }
         return false
     }
@@ -166,8 +174,9 @@ actor PortMapper {
         (await soap(device, action: "GetExternalIPAddress", arguments: []))?.between("<NewExternalIPAddress>", "</NewExternalIPAddress>")
     }
 
-    static func soap(_ device: UPnPDevice, action: String, arguments: [(String, String)]) async -> String? {
-        let body = arguments.map { "<\($0.0)>\($0.1)</\($0.0)>" }.joined()
+    static func soap(_ device: UPnPDevice, action: String, arguments: [(String, String)], allowLeaseFault: Bool = false) async -> String? {
+        guard UPnPDescription.allowedTypes.contains(device.service), ["AddPortMapping", "DeletePortMapping", "GetExternalIPAddress"].contains(action) else { return nil }
+        let body = arguments.map { "<\($0.0)>\(Self.xmlEscape($0.1))</\($0.0)>" }.joined()
         let envelope = """
         <?xml version="1.0"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" \
         s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:\(action) xmlns:u="\(device.service)">\(body)</u:\(action)></s:Body></s:Envelope>
@@ -177,9 +186,14 @@ actor PortMapper {
         request.setValue("text/xml; charset=\"utf-8\"", forHTTPHeaderField: "Content-Type")
         request.setValue("\"\(device.service)#\(action)\"", forHTTPHeaderField: "SOAPAction")
         request.httpBody = Data(envelope.utf8)
-        guard let (data, response) = try? await session.data(for: request),
-              (response as? HTTPURLResponse)?.statusCode == 200, data.count <= 64 * 1024 else { return nil }
-        return String(decoding: data, as: UTF8.self)
+        guard let data = await boundedResponse(request, limit: 64 * 1024, allowLeaseFault: allowLeaseFault),
+              SOAPResponse.accepts(data, action: action, service: device.service) || (allowLeaseFault && SOAPResponse.faultCode(data) == 725),
+              let reply = String(data: data, encoding: .utf8) else { return nil }
+        return reply
+    }
+    static func xmlEscape(_ value: String) -> String {
+        value.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;").replacingOccurrences(of: "\"", with: "&quot;").replacingOccurrences(of: "'", with: "&apos;")
     }
 }
 
