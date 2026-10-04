@@ -28,6 +28,7 @@ public final class AppModel {
     public var indexing = false
     public var downloadsSuspended = false
     public var uploadsSuspended = false
+    public var portCheck: String?
     public var sharedCount = 0
     public var sharedBytes: UInt64 = 0
     public var shareErrors: [String] = []
