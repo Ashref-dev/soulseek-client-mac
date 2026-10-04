@@ -64,6 +64,12 @@ struct ArpeggioCommands: Commands {
             Divider()
             Button("Rescan Shared Folders") { if let model { Task { await model.rescanShares() } } }
                 .disabled(model == nil || model?.indexing == true)
+            Button(model?.downloadsSuspended == true ? "Resume Downloads" : "Pause Downloads") {
+                if let model { Task { await model.setTransfersSuspended(upload: false, !model.downloadsSuspended) } }
+            }.keyboardShortcut("p", modifiers: [.command, .option]).disabled(model == nil)
+            Button(model?.uploadsSuspended == true ? "Resume Uploads" : "Pause Uploads") {
+                if let model { Task { await model.setTransfersSuspended(upload: true, !model.uploadsSuspended) } }
+            }.keyboardShortcut("p", modifiers: [.command, .option, .shift]).disabled(model == nil)
         }
         CommandGroup(before: .sidebar) {
             ForEach(SidebarSection.allCases) { section in

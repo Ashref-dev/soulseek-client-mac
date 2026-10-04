@@ -79,6 +79,12 @@ struct MenuBarPanel: View {
             if let item = model.playback.item { Divider(); nowPlaying(item).padding(.horizontal, 14).padding(.vertical, 10) }
             Divider()
             VStack(spacing: 2) {
+                PanelRow(title: model.downloadsSuspended ? "Resume Downloads" : "Pause Downloads", symbol: model.downloadsSuspended ? "play" : "pause") {
+                    Task { await model.setTransfersSuspended(upload: false, !model.downloadsSuspended) }
+                }
+                PanelRow(title: model.uploadsSuspended ? "Resume Uploads" : "Pause Uploads", symbol: model.uploadsSuspended ? "play" : "pause") {
+                    Task { await model.setTransfersSuspended(upload: true, !model.uploadsSuspended) }
+                }
                 PanelRow(title: "Open Arpeggio", symbol: "macwindow") { openMain() }
                 PanelRow(title: "Settings…", symbol: "gearshape") { NSApp.activate(); openSettings() }
                 PanelRow(title: "Quit Arpeggio", symbol: "power") { NSApp.terminate(nil) }
