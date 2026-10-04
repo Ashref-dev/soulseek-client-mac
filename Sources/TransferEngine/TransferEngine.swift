@@ -20,6 +20,8 @@ public actor TransferEngine {
     var downloadLimit: Double = 0
     var uploadLimit: Double = 0
     var connected = false
+    var downloadsSuspended = false
+    var uploadsSuspended = false
     var remoteQueued: Set<String> = []
     var retryTasks: [String: Task<Void, Never>] = [:]
     var uploadBlockedUntil: [String: Date] = [:]
@@ -27,9 +29,18 @@ public actor TransferEngine {
     var attemptBase: [String: (moved: UInt64, offset: UInt64)] = [:]
     var closing: Set<String> = []
     var negotiationTasks: [String: Task<Void, Never>] = [:]
+    var negotiations: [String: UUID] = [:]
+    var negotiationLeases: [String: SendLease] = [:]
+    var downloadNegotiationRevision: UInt64 = 0
+    var uploadNegotiationRevision: UInt64 = 0
+    var beforePersistence: (@Sendable (String) async -> Void)?
+    var sendPeer: @Sendable (String, UInt32, Data, SendLease) async throws -> Void
+    var nextNegotiationToken: @Sendable () async -> UInt32
     var uploadAuthorizer: (@Sendable (String, SharedFile, URL) async -> Bool)?
     public init(session: SoulseekSession, database: Database, root: URL) {
         self.session = session; self.database = database; downloadRoot = root
+        sendPeer = { user, code, payload, lease in try await session.peerSend(user: user, code: code, payload: payload, lease: lease) }
+        nextNegotiationToken = { await session.nextToken() }
         let pair = AsyncStream<[Transfer]>.makeStream(bufferingPolicy: .bufferingNewest(1))
         updates = pair.stream; continuation = pair.continuation
     }
@@ -53,6 +64,8 @@ public actor TransferEngine {
     public func setConnected(_ value: Bool) async {
         connected = value
         if !value {
+            downloadNegotiationRevision &+= 1; uploadNegotiationRevision &+= 1
+            for id in Array(negotiations.keys) { invalidateNegotiation(id) }
             let ownedTasks = Array(tasks.values)
             let ids = transfers.filter { [.transferring, .negotiating].contains($0.status) }.map(\.id)
             var checkpoints: [Transfer] = []
@@ -122,45 +135,57 @@ public actor TransferEngine {
         guard let index = transfers.firstIndex(where: { $0.id == id }), transfers[index].status != .completed else { return }
         transfers[index].status = status; transfers[index].speed = 0
         transfers[index].token = nil; attempts.removeValue(forKey: id)
+        invalidateNegotiation(id)
         remoteQueued.remove(id); retryTasks.removeValue(forKey: id)?.cancel()
         negotiationTasks.removeValue(forKey: id)?.cancel()
-        let snapshot = transfers[index]
         let task = tasks.removeValue(forKey: id)
         closing.insert(id)
         task?.cancel(); sockets.removeValue(forKey: id)?.cancel()
         await task?.value
-        if transfers.contains(where: { $0.id == id }) { await save(snapshot) }
+        if let current = transfers.first(where: { $0.id == id }) { await save(current) }
         closing.remove(id)
         publish(); await pump()
     }
     func pump() async {
-        guard connected else { return }
+        guard connected, !downloadsSuspended else { return }
+        let revision = downloadNegotiationRevision
         let active = transfers.filter { !$0.upload && !$0.isPreview && [.negotiating, .transferring].contains($0.status) && !remoteQueued.contains($0.id) }.count
         let previews = transfers.filter { !$0.upload && $0.isPreview && $0.status == .queued }
         let queued = previews + transfers.filter { !$0.upload && !$0.isPreview && $0.status == .queued }.prefix(max(0, downloadSlots - active))
         for transfer in queued {
-            guard let index = transfers.firstIndex(where: { $0.id == transfer.id }), transfers[index].status == .queued else { continue }
+            guard revision == downloadNegotiationRevision, connected, !downloadsSuspended, let index = transfers.firstIndex(where: { $0.id == transfer.id }), transfers[index].status == .queued, !closing.contains(transfer.id) else { continue }
             transfers[index].status = .negotiating
+            let identity = beginNegotiation(transfer.id)
             startNegotiationDeadline(transfer.id, token: nil)
-            await save(transfers[index])
+            await save(transfers[index], negotiation: identity)
+            guard negotiationIsCurrent(transfer.id, identity: identity) else { continue }
             do {
                 var writer = WireWriter(); writer.string(transfer.file.path)
-                try await session.peerSend(user: transfer.user, code: 43, payload: writer.data)
-                try await session.peerSend(user: transfer.user, code: 51, payload: writer.data)
-            } catch { await fail(transfer.id, error: error) }
+                try await sendNegotiation(transfer.id, identity: identity, user: transfer.user, code: 43, payload: writer.data)
+                guard negotiationIsCurrent(transfer.id, identity: identity) else { continue }
+                try await sendNegotiation(transfer.id, identity: identity, user: transfer.user, code: 51, payload: writer.data)
+            } catch { await fail(transfer.id, error: error, negotiation: identity) }
         }
         publish()
     }
     func publish() { continuation.yield(transfers) }
-    func save(_ transfer: Transfer) async {
-        do { try await database.put(transfer, collection: "transfers", id: transfer.id) }
-        catch { if let index = transfers.firstIndex(where: { $0.id == transfer.id }) { transfers[index].error = "Could not save transfer state: \(error.localizedDescription)" } }
+    func save(_ transfer: Transfer, negotiation: UUID? = nil) async {
+        if let beforePersistence { await beforePersistence(transfer.id) }
+        if let negotiation, !negotiationIsCurrent(transfer.id, identity: negotiation) { return }
+        guard let current = transfers.first(where: { $0.id == transfer.id }) else { return }
+        do { try await database.put(current, collection: "transfers", id: current.id) }
+        catch {
+            if let negotiation, !negotiationIsCurrent(transfer.id, identity: negotiation) { return }
+            if let index = transfers.firstIndex(where: { $0.id == transfer.id }) { transfers[index].error = "Could not save transfer state: \(error.localizedDescription)" }
+        }
     }
-    func fail(_ id: String, error: Error, attempt: UUID? = nil) async {
+    func fail(_ id: String, error: Error, attempt: UUID? = nil, negotiation: UUID? = nil) async {
         if let attempt, attempts[id] != attempt { return }
+        if let negotiation, !negotiationIsCurrent(id, identity: negotiation) { return }
         guard let index = transfers.firstIndex(where: { $0.id == id }), ![.paused, .cancelled, .completed].contains(transfers[index].status) else { return }
         transfers[index].status = .failed; transfers[index].error = error.localizedDescription; transfers[index].speed = 0
         transfers[index].token = nil
+        invalidateNegotiation(id)
         attempts.removeValue(forKey: id); remoteQueued.remove(id); negotiationTasks.removeValue(forKey: id)?.cancel()
         sockets.removeValue(forKey: id)?.cancel(); tasks.removeValue(forKey: id)?.cancel()
         let retry = connected && !transfers[index].upload && transfers[index].retries < 3 && !(error is FileSafetyError)
@@ -171,7 +196,7 @@ public actor TransferEngine {
         }
         let snapshot = transfers[index]
         await save(snapshot); publish()
-        if retry {
+        if retry, !downloadsSuspended, transfers.contains(where: { $0.id == id && $0.status == .failed && $0.retries == snapshot.retries }) {
             retryTasks[id] = Task { [weak self] in
                 do { try await Task.sleep(for: .seconds(delay)); try Task.checkCancellation() } catch { return }
                 guard let self else { return }; await self.retryIfFailed(id)
@@ -179,15 +204,17 @@ public actor TransferEngine {
         }
     }
     func startNegotiationDeadline(_ id: String, token: UInt32?) {
+        let identity = negotiations[id]
         negotiationTasks.removeValue(forKey: id)?.cancel()
         negotiationTasks[id] = Task { [weak self] in
             do { try await Task.sleep(for: .seconds(45)); try Task.checkCancellation() } catch { return }
-            await self?.expireNegotiation(id, token: token)
+            await self?.expireNegotiation(id, token: token, identity: identity)
         }
     }
-    func expireNegotiation(_ id: String, token: UInt32?) async {
+    func expireNegotiation(_ id: String, token: UInt32?, identity: UUID? = nil) async {
+        if let identity, !negotiationIsCurrent(id, identity: identity) { return }
         guard let item = transfers.first(where: { $0.id == id }), item.status == .negotiating, item.token == token, !remoteQueued.contains(id) else { return }
-        await fail(id, error: ProtocolError.invalid("This user didn’t respond to the transfer request. Retry when they are available."))
+        await fail(id, error: ProtocolError.invalid("This user didn’t respond to the transfer request. Retry when they are available."), negotiation: identity)
         await pump(); await pumpUploads()
     }
     func retryIfFailed(_ id: String) async {
