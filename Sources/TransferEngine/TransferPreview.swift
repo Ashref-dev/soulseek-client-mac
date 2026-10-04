@@ -7,16 +7,23 @@ extension TransferEngine {
     /// Starts (or reuses) a transfer that can be played while it arrives. Previews live in a cache folder
     /// until kept, skip the download-slot limit, and are discarded when abandoned or on relaunch.
     public func preview(_ result: SearchResult) async throws -> String {
-        guard result.file.size <= 16 * 1024 * 1024 * 1024 else { throw ProtocolError.oversized }
+        guard PreviewFormat.classify(result.file.name) != nil else { throw ProtocolError.invalid("This format has no built-in preview. Download it to use another app.") }
+        guard result.file.size > 0, result.file.size <= PreviewFormat.maximumBytes else { throw ProtocolError.oversized }
         if let existing = transfers.first(where: { !$0.upload && $0.user == result.user && $0.file.path == result.file.path && $0.status != .cancelled }) {
             if [.failed, .paused].contains(existing.status) { await resume(existing.id) }
             return existing.id
         }
-        let (destination, partial) = try SafeDestination.plan(root: previewRoot, user: result.user, remotePath: result.file.path)
+        for item in transfers.filter(\.isPreview) { await discardPreview(item.id) }
         var transfer = Transfer(user: result.user, file: result.file)
+        let (destination, partial) = try SafeDestination.plan(root: previewRoot.appendingPathComponent(transfer.id, isDirectory: true), user: result.user, remotePath: result.file.path)
         transfer.destination = destination.path; transfer.partial = partial.path; transfer.preview = true
         transfers.insert(transfer, at: 0)
         try await database.put(transfer, collection: "transfers", id: transfer.id)
+        let id = transfer.id
+        if transfers.contains(where: { $0.id == id && $0.isPreview }) { previewDeadlines[id] = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(300)); try Task.checkCancellation() } catch { return }
+            await self?.expirePreview(id)
+        } }
         publish(); await pump()
         return transfer.id
     }
@@ -33,22 +40,37 @@ extension TransferEngine {
         guard let fresh = transfers.firstIndex(where: { $0.id == id }) else { return }
         transfers[fresh].destination = destination.path
         transfers[fresh].preview = nil
+        previewTerminalOwners.removeValue(forKey: id)
+        previewDeadlines.removeValue(forKey: id)?.cancel()
         transfers[fresh].date = Date()
         if transfers[fresh].status == .cancelled { transfers[fresh].status = .queued }
         await save(transfers[fresh]); publish(); await pump()
     }
 
     public func discardPreview(_ id: String) async {
-        guard let item = transfers.first(where: { $0.id == id }), item.isPreview else { return }
+        guard let item = transfers.first(where: { $0.id == id }), item.isPreview, previewTerminalOwners[id] == nil else { return }
+        let owner = UUID(); previewTerminalOwners[id] = owner
+        defer { if previewTerminalOwners[id] == owner { previewTerminalOwners.removeValue(forKey: id) } }
+        previewDeadlines.removeValue(forKey: id)?.cancel()
         if !item.status.isTerminal { await change(id, to: .cancelled) }
-        guard let current = transfers.first(where: { $0.id == id }), current.isPreview else { return }
-        await removePreviewFiles(current)
+        guard previewTerminalOwners[id] == owner, let current = transfers.first(where: { $0.id == id }), current.isPreview else { return }
+        removePreviewFiles(current)
         transfers.removeAll { $0.id == id }
         try? await database.remove(collection: "transfers", id: id)
         publish(); await pump()
     }
 
     public func snapshot() -> [Transfer] { transfers }
+    func expirePreview(_ id: String) async {
+        guard let item = transfers.first(where: { $0.id == id }), item.isPreview, item.status != .completed, previewTerminalOwners[id] == nil else { return }
+        let owner = UUID(); previewTerminalOwners[id] = owner
+        defer { if previewTerminalOwners[id] == owner { previewTerminalOwners.removeValue(forKey: id) } }
+        await change(id, to: .cancelled)
+        if previewTerminalOwners[id] == owner, let index = transfers.firstIndex(where: { $0.id == id && $0.isPreview }) {
+            transfers[index].error = "Preview timed out after five minutes. Retry or download the file."
+            removePreviewFiles(transfers[index]); await save(transfers[index]); publish()
+        }
+    }
 
     /// Deletes everything in the preview cache that no transfer still points at (abandoned previews,
     /// leftovers from a crash). Kept previews still finishing keep their partial file.
@@ -69,7 +91,7 @@ extension TransferEngine {
         }
     }
 
-    func removePreviewFiles(_ item: Transfer) async {
+    func removePreviewFiles(_ item: Transfer) {
         let root = previewRoot.resolvingSymlinksInPath().path + "/"
         for path in [item.partial, item.destination].compactMap({ $0 }) {
             let url = URL(fileURLWithPath: path)

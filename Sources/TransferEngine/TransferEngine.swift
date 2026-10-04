@@ -15,6 +15,8 @@ public actor TransferEngine {
     var layout = DownloadLayout()
     var uploadQueueLimit = 200
     var previewRoot = FileManager.default.temporaryDirectory.appendingPathComponent("ArpeggioPreviews", isDirectory: true)
+    var previewDeadlines: [String: Task<Void, Never>] = [:]
+    var previewTerminalOwners: [String: UUID] = [:]
     var downloadSlots = 3
     var uploadSlots = 2
     var downloadLimit: Double = 0
@@ -46,7 +48,7 @@ public actor TransferEngine {
     }
     public func restore() async throws {
         transfers = try await database.all(Transfer.self, collection: "transfers")
-        for item in transfers where item.isPreview { await removePreviewFiles(item); try? await database.remove(collection: "transfers", id: item.id) }
+        for item in transfers where item.isPreview { removePreviewFiles(item); try? await database.remove(collection: "transfers", id: item.id) }
         transfers.removeAll(where: \.isPreview)
         for index in transfers.indices where [.transferring, .negotiating, .queued].contains(transfers[index].status) {
             transfers[index].status = transfers[index].upload ? .failed : .queued
@@ -86,7 +88,10 @@ public actor TransferEngine {
         }
         publish(); await pump()
     }
-    public func shutdown() async { await setConnected(false); continuation.finish() }
+    public func shutdown() async {
+        for task in previewDeadlines.values { task.cancel() }; previewDeadlines.removeAll()
+        await setConnected(false); continuation.finish()
+    }
     public func setUploadAuthorizer(_ authorizer: @escaping @Sendable (String, SharedFile, URL) async -> Bool) { uploadAuthorizer = authorizer }
     public func revalidateUploads() async {
         let active = transfers.filter { $0.upload && [.queued, .negotiating, .transferring].contains($0.status) }
