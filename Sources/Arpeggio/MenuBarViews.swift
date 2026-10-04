@@ -6,13 +6,13 @@ import ArpeggioServices
 /// while someone is downloading from you.
 enum MenuBarGlyph {
     static func image(presence: Presence, uploading: Bool) -> NSImage {
-        let image = NSImage(size: NSSize(width: 25, height: 18), flipped: true) { _ in
+        let image = NSImage(size: MenuGlyphGeometry.canvas, flipped: true) { _ in
             guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
-            var transform = ArpeggioMark.transform(into: CGRect(x: 0, y: 0.5, width: 18, height: 17), fit: true)
+            var transform = ArpeggioMark.transform(into: MenuGlyphGeometry.mark, fit: true)
             ctx.addPath(ArpeggioMark.combined.copy(using: &transform)!)
             ctx.setFillColor(NSColor.black.withAlphaComponent(presence == .offline ? 0.4 : 1).cgColor)
             ctx.fillPath(using: .evenOdd)
-            let badge = CGRect(x: 19, y: 11.5, width: 6, height: 6)
+            let badge = MenuGlyphGeometry.badge
             ctx.setFillColor(NSColor.black.cgColor)
             if uploading, presence != .offline {
                 let arrow = CGMutablePath()
