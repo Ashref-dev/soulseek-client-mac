@@ -42,6 +42,7 @@ struct LoginSheet: View {
             footer
         }
         .frame(width: 460)
+        .tint(.arpeggio)
         .task {
             username = model.settings.username
             if !username.isEmpty {
@@ -176,9 +177,14 @@ struct LoginSheet: View {
             Button(model.connection.isConnected ? "Done" : "Cancel") { dismiss() }
                 .keyboardShortcut(.cancelAction)
             if model.connection.isConnected {
-                Button("Disconnect", role: .destructive) {
+                Button("Sign Out", role: .destructive) {
+                    Task { await model.signOut(); dismiss() }
+                }
+                .help("Disconnect and forget the saved password")
+                Button("Disconnect") {
                     Task { await model.disconnect() }
                 }
+                .help("Go offline; Arpeggio still signs in automatically next time")
             } else if model.connection.isBusy {
                 Button("Stop") { Task { await model.disconnect() } }
             } else {

@@ -25,6 +25,10 @@ public enum Keychain {
         let query = base(user)
         let attributes = [kSecValueData as String: Data(password.utf8)]
         var status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        if status != errSecSuccess, status != errSecItemNotFound {
+            // An item written by a differently signed build can't be updated; replace it instead.
+            _ = SecItemDelete(query as CFDictionary); status = errSecItemNotFound
+        }
         if status == errSecItemNotFound {
             var item = query
             item[kSecValueData as String] = Data(password.utf8)
@@ -32,6 +36,10 @@ public enum Keychain {
             status = SecItemAdd(item as CFDictionary, nil)
         }
         guard status == errSecSuccess else { throw StorageError.sqlite("Could not save password in Keychain (\(status)).") }
+    }
+    public static func delete(for user: String) throws {
+        let status = SecItemDelete(base(user) as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else { throw StorageError.sqlite("Could not remove the saved password (\(status)).") }
     }
     private static func base(_ user: String) -> [String: Any] {
         [kSecClass as String: kSecClassGenericPassword,
