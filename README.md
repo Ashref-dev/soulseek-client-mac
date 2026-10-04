@@ -9,13 +9,15 @@ Soulseek is a long-running peer-to-peer network where people share their music l
 ## What it does
 
 - **Search** the whole network. Results stream in live and are grouped by person, album and track, with quick filters for lossless, hi-res and bitrate.
-- **Listen first.** Stream any track while it downloads into a temporary cache, see its tags and cover art, and keep it with one click.
+- **Preview first.** Preview native audio, video, images and PDFs from Search, Browse or Transfers, including with Space. Supported audio can stream while bytes arrive; other files fetch into a temporary cache before opening in macOS playback or Quick Look. Codec support depends on macOS. Previews are limited to 512 MB and a five-minute fetch deadline. Keep them with Download, or close to discard.
 - **Download** single files or whole albums. Each album lands in its own folder. There are no per-user, "incomplete" or "complete" folders unless you ask for them.
 - **Share** folders with a drag and drop. See what you share, how big it is, and who is downloading from you right now.
+- **Sharing policy and indexing.** Optionally require sharing before someone downloads from you, with a configurable automatic message. Only fresh confirmed zero-share counts are declined; unknown counts are allowed. Messages are throttled per account and user. Indexing reports its current folder and actual files processed, without estimating an unknown total.
 - **Stay in the menu bar.** Close the window and Arpeggio keeps sharing. The menu bar icon shows whether you are offline, available, away or uploading.
 - **Statistics** count everything you have downloaded and uploaded since you started, and turn it into a picture you can share.
-- **Everything else you expect from Soulseek:** wishlist searches, received searches, browsing someone's library, private messages, chat rooms, a user list with trusted and ignored people, Available and Away status, your own picture and description, upload slots, speed limits and per-user queue limits.
-- **Opens its own port.** Arpeggio asks your router to forward the listening port with NAT-PMP or UPnP, so people can reach you.
+- **Basic Soulseek workflows:** wishlist searches, received searches, browsing someone's library, private messages, chat rooms, a user list with trusted and ignored people, Available and Away status, your own picture and description, upload slots, speed limits and per-user queue limits. This is not a promise of exhaustive parity with mature clients.
+- **Pause entire directions.** Pause or resume Uploads and Downloads independently from the menu bar or Network menu. Active sockets stop, queues remain, and downloads resume from partial bytes. Presence stays unchanged. These controls are session-only.
+- **Router diagnostics.** Choose NAT-PMP and UPnP independently. Arpeggio reports actual mapping acknowledgments, not assumed compatibility or external reachability. Check Ports tests the local TCP listener only. Router/firewall/VPN and internet reachability still need an external check; listening ports are never changed automatically.
 - **Updates itself** from GitHub Releases, and only installs updates signed by the same developer.
 
 ## Install
