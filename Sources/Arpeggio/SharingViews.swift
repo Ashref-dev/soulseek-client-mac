@@ -223,7 +223,7 @@ private struct FolderCard: View {
     let folder: ShareFolder
     let summary: ShareRootSummary?
     let indexing: Bool
-    let setTrusted: (Bool) -> Void
+    let setTrusted: @MainActor @Sendable (Bool) -> Void
     let remove: () -> Void
     @State private var hovering = false
 
