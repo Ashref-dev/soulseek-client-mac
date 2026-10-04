@@ -77,6 +77,7 @@ extension AppModel {
 
     func authorizeUpload(user: String, file: SharedFile, url: URL) async -> Bool {
         guard !shuttingDown, !users.contains(where: { $0.username == user && $0.ignored }) else { return false }
+        guard await sharingPermits(user) else { return false }
         let roots = settings.sharedFolders.filter { url.path.hasPrefix(URL(fileURLWithPath: $0.path).resolvingSymlinksInPath().standardizedFileURL.path + "/") }
         guard let specific = roots.max(by: { $0.path.count < $1.path.count }) else { return false }
         if specific.buddyOnly, !users.contains(where: { $0.username == user && $0.trusted }) { return false }

@@ -101,6 +101,8 @@ public final class AppModel {
     @ObservationIgnored var shareWatcher: ShareWatcher?
     @ObservationIgnored var shareChangeTask: Task<Void, Never>?
     @ObservationIgnored let sharingPolicy = SharingPolicy()
+    @ObservationIgnored var uploadRequestTasks: [UUID: Task<Void, Never>] = [:]
+    @ObservationIgnored var uploadRequestUsers: [UUID: String] = [:]
     @ObservationIgnored var watchedPaths: [String] = []
     public let dataDirectory: URL
 
@@ -199,6 +201,8 @@ public final class AppModel {
         intentionallyOffline = true; loginRevision &+= 1
         reconnectTask?.cancel(); reconnectTask = nil; wishlistTask?.cancel(); wishlistTask = nil
         batchTask?.cancel(); searchStopTask?.cancel(); shareWatchTask?.cancel(); shareScanTask?.cancel()
+        for task in uploadRequestTasks.values { task.cancel() }
+        uploadRequestTasks.removeAll(); uploadRequestUsers.removeAll()
         idleTask?.cancel(); statisticsTask?.cancel(); updateTask?.cancel(); receivedFlushTask?.cancel()
         await abandonCurrentPreview(); playback.stop()
         await removePortMapping()

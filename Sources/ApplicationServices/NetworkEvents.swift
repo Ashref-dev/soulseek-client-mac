@@ -92,6 +92,7 @@ extension AppModel {
             if joined { if joinedRooms[room]?.contains(user) != true { joinedRooms[room]?.append(user) } }
             else { joinedRooms[room]?.removeAll { $0 == user } }
         case .userStats(let username, let speed, let files, let country):
+            await sharingPolicy.observe(user: username, files: files)
             userStatistics[username] = UserStatistics(speed: speed, files: files, country: country ?? userStatistics[username]?.country)
             if let index = users.firstIndex(where: { $0.username == username }) {
                 users[index].averageSpeed = speed; users[index].sharedFiles = files
@@ -101,7 +102,24 @@ extension AppModel {
         case .privileges(let seconds): privilegeSeconds = seconds
         case .wishlistInterval(let seconds): wishlistSeconds = seconds; scheduleWishlist()
         case .peerMessage(let user, let code, let payload):
-            do { try await handlePeer(user: user, code: code, payload: payload) } catch { log(error.localizedDescription) }
+            // A policy lookup needs server events to continue flowing while this request awaits stats.
+            var reader = WireReader(payload)
+            let uploadRequest = code == 43 || (code == 40 && (try? reader.uint()) == 0)
+            if uploadRequest {
+                guard uploadRequestTasks.count < 32, uploadRequestUsers.values.filter({ $0 == user }).count < 4 else {
+                    do { try await rejectBusyUpload(user: user, code: code, payload: payload) } catch { log(error.localizedDescription) }
+                    return
+                }
+                let id = UUID(); uploadRequestUsers[id] = user
+                uploadRequestTasks[id] = Task { [weak self] in
+                    guard let self else { return }
+                    defer { self.uploadRequestTasks.removeValue(forKey: id); self.uploadRequestUsers.removeValue(forKey: id) }
+                    guard !Task.isCancelled, generation == self.activeSessionGeneration else { return }
+                    do { try await self.handlePeer(user: user, code: code, payload: payload) } catch { self.log(error.localizedDescription) }
+                }
+            } else {
+                do { try await handlePeer(user: user, code: code, payload: payload) } catch { log(error.localizedDescription) }
+            }
         case .fileConnection(let user, let connection): Task { await transferEngine.acceptFile(user: user, connection: connection) }
         case .searchRequest(let user, let token, let query):
             guard !users.contains(where: { $0.username == user && $0.ignored }) else { return }
@@ -120,6 +138,16 @@ extension AppModel {
         }
     }
     func flushResults() { results.append(contentsOf: buffered); buffered.removeAll(keepingCapacity: true); batchTask = nil }
+    private func rejectBusyUpload(user: String, code: UInt32, payload: Data) async throws {
+        var reader = WireReader(payload); var writer = WireWriter()
+        if code == 43 {
+            writer.string(try reader.string()); writer.string("Too many files")
+            try await session.peerSend(user: user, code: 50, payload: writer.data)
+        } else {
+            _ = try reader.uint(); writer.uint(try reader.uint()); writer.byte(0); writer.string("Too many files")
+            try await session.peerSend(user: user, code: 41, payload: writer.data)
+        }
+    }
     func reconnectAfterCredentialLookup(configuration: AppSettings, revision: UInt64) async {
         let password = await savedPassword()
         guard !Task.isCancelled, revision == loginRevision else { return }
@@ -163,6 +191,10 @@ extension AppModel {
             await download(files.map { SearchResult(user: user, file: $0, freeSlot: false, speed: 0, queue: 0) })
         case 43:
             var reader = WireReader(payload); let path = try reader.string()
+            guard await sharingPermits(user) else {
+                var writer = WireWriter(); writer.string(path); writer.string("You must share files to download.")
+                try await session.peerSend(user: user, code: 50, payload: writer.data); return
+            }
             let file = ignored ? nil : await shareIndex.resolve(path, allowPrivate: trusted, configuredFolders: currentShareFolders)
             if let file, await transferEngine.queueUpload(user: user, file: file.file, localURL: file.localURL) { return }
             var writer = WireWriter(); writer.string(path); writer.string(file == nil ? "File not shared." : "Too many files")
@@ -173,6 +205,10 @@ extension AppModel {
             guard direction == 0 else { try await transferEngine.peerMessage(user: user, code: code, payload: payload); return }
             let token = try reader.uint(); let path = try reader.string()
             var response = WireWriter(); response.uint(token); response.byte(0)
+            guard await sharingPermits(user) else {
+                response.string("You must share files to download.")
+                try await session.peerSend(user: user, code: 41, payload: response.data); return
+            }
             let file = ignored ? nil : await shareIndex.resolve(path, allowPrivate: trusted, configuredFolders: currentShareFolders)
             if let file, await transferEngine.queueUpload(user: user, file: file.file, localURL: file.localURL, start: false) {
                 response.string("Queued")
