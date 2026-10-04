@@ -40,37 +40,49 @@ extension AppModel {
 
     /// Plays a finished download, streams an in-progress one, or starts a cached preview transfer.
     public func listen(to result: SearchResult) async {
+        guard let format = PreviewFormat.classify(result.file.name) else { error = "This format has no built-in preview. Download it to use another app."; return }
+        if format != .streamingAudio {
+            if let done = downloadState(user: result.user, path: result.file.path), done.status == .completed,
+               let path = done.destination, FileManager.default.fileExists(atPath: path) {
+                previewLocal(URL(fileURLWithPath: path), title: result.file.name)
+            } else { await fetchPreview(result) }
+            return
+        }
         if playback.item?.user == result.user, playback.item?.remotePath == result.file.path { playback.togglePlay(); return }
         if let done = downloadState(user: result.user, path: result.file.path), done.status == .completed,
            let path = done.destination, FileManager.default.fileExists(atPath: path) {
             play(file: URL(fileURLWithPath: path), title: result.file.name, subtitle: result.user, info: result.file); return
         }
         guard connection == .connected else { error = "Connect to Soulseek to preview files."; return }
-        playbackRevision &+= 1; let revision = playbackRevision
+        let selection = reservePlaybackSelection(); let revision = selection.revision
+        await discardAbandonedPreviews(selection.abandoned)
+        guard revision == playbackRevision else { return }
         do {
             let id = try await transferEngine.preview(result)
             guard revision == playbackRevision else {
-                if playback.item?.transferID != id { await transferEngine.discardPreview(id) }
+                if !isSelectedPreview(id) { await transferEngine.discardPreview(id) }
                 return
             }
-            let isPreview = transfers.first(where: { $0.id == id })?.isPreview ?? true
-            let previous = playback.item
+            let snapshot = await transferEngine.snapshot()
+            guard revision == playbackRevision else {
+                if !isSelectedPreview(id) { await transferEngine.discardPreview(id) }
+                return
+            }
+            let isPreview = snapshot.first(where: { $0.id == id })?.isPreview ?? true
             playback.playStream(transferID: id, user: result.user, file: result.file, preview: isPreview)
-            playback.refresh(transfers)
-            await discardIfPreview(previous, except: id)
+            playback.refresh(snapshot)
         } catch { if revision == playbackRevision { self.error = error.localizedDescription } }
     }
 
     public func play(file url: URL, title: String, subtitle: String, info: SharedFile? = nil) {
-        playbackRevision &+= 1
-        let previous = playback.item
+        let selection = reservePlaybackSelection()
         playback.playFile(url, title: title, subtitle: subtitle, file: info)
-        Task { await discardIfPreview(previous, except: nil) }
+        Task { await discardAbandonedPreviews(selection.abandoned) }
     }
 
     public func play(_ transfer: Transfer) {
         guard transfer.status == .completed, let path = transfer.destination, FileManager.default.fileExists(atPath: path) else { return }
-        play(file: URL(fileURLWithPath: path), title: transfer.file.name, subtitle: transfer.user, info: transfer.file)
+        previewLocal(URL(fileURLWithPath: path), title: transfer.file.name)
     }
 
     public func keepPreview() async {
@@ -87,14 +99,23 @@ extension AppModel {
     }
 
     func abandonCurrentPreview() async {
-        playbackRevision &+= 1
-        let previous = playback.stop()
-        await discardIfPreview(previous, except: nil)
+        let selection = reservePlaybackSelection()
+        await discardAbandonedPreviews(selection.abandoned)
     }
 
-    private func discardIfPreview(_ item: Playback.Item?, except keep: String?) async {
-        guard let item, item.isPreview, let id = item.transferID, id != keep else { return }
-        await transferEngine.discardPreview(id)
+    func reservePlaybackSelection() -> (revision: UInt64, abandoned: Set<String>) {
+        playbackRevision &+= 1
+        let previous = playback.stop(); let document = documentPreview; documentPreview = nil
+        var ids = Set<String>()
+        if let previous, previous.isPreview, let id = previous.transferID { ids.insert(id) }
+        if let id = document?.transferID { ids.insert(id) }
+        return (playbackRevision, ids)
+    }
+    func isSelectedPreview(_ id: String) -> Bool {
+        playback.item?.transferID == id || documentPreview?.transferID == id
+    }
+    func discardAbandonedPreviews(_ ids: Set<String>) async {
+        for id in ids where !isSelectedPreview(id) { await transferEngine.discardPreview(id) }
     }
 
     public static func previewDirectory() -> URL {

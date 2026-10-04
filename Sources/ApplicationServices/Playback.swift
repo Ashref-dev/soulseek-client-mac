@@ -50,6 +50,14 @@ public final class Playback {
         let path = url.path
         readTags(asset: asset, isFLAC: url.pathExtension.lowercased() == "flac") { (path, UInt64.max) }
     }
+    func playCompletedTransfer(_ transfer: Transfer, url: URL) {
+        let asset = AVURLAsset(url: url)
+        start(Item(title: transfer.file.name, subtitle: transfer.user, user: transfer.user, remotePath: transfer.file.path,
+                   transferID: transfer.id, isPreview: transfer.isPreview, fileURL: url, fileName: transfer.file.name,
+                   quality: Self.quality(transfer.file, fallbackName: transfer.file.name)), asset: asset, expected: Double(transfer.file.length))
+        bufferedFraction = 1
+        readTags(asset: asset, isFLAC: url.pathExtension.lowercased() == "flac") { (url.path, UInt64.max) }
+    }
 
     static func quality(_ file: SharedFile?, fallbackName: String) -> String {
         guard let file else { return (fallbackName as NSString).pathExtension.uppercased() }

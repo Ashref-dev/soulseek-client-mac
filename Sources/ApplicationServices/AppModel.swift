@@ -53,6 +53,7 @@ public final class AppModel {
     public internal(set) var update: UpdateState = .idle
     public internal(set) var menuBarExtraVisible = true
     public let playback = Playback()
+    public var documentPreview: DocumentPreview?
     public let session: SoulseekSession
     public let database: Database
     public let shareIndex: ShareIndex
@@ -154,6 +155,7 @@ public final class AppModel {
                 self.ingestStatistics(transfers)
                 self.indexDownloads(transfers)
                 self.playback.refresh(transfers)
+                self.refreshDocumentPreview(transfers)
                 let finished = transfers.filter { !$0.upload && !$0.isPreview && $0.status == .completed && !previous.contains($0.id) }
                 if let first = finished.first { await self.notify(key: "downloads", title: "Download finished", text: first.file.name, minimumInterval: 5) }
                 if !finished.isEmpty, self.settings.autoClearDownloads == true, self.playback.item?.transferID.map({ id in finished.contains { $0.id == id } }) != true {
