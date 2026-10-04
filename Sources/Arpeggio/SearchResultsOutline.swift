@@ -2,25 +2,26 @@ import SwiftUI
 import ArpeggioServices
 import SoulseekCore
 
-/// Native outline of search results: user → folder/release → tracks. Users start collapsed; a folder can be
-/// downloaded whole from its row without expanding its tracks.
+/// Native outline of search results: user → folder/release → tracks, fully expanded unless the user collapses
+/// a branch. A folder can be downloaded whole from its row; audio tracks can be streamed before downloading.
 struct SearchResultsOutline: View {
     let model: AppModel
     let navigator: Navigator
     let hierarchy: ResultHierarchy
     @Binding var selection: Set<ResultNodeID>
-    @Binding var expandedUsers: Set<String>
-    @Binding var expandedFolders: Set<String>
+    @Binding var collapsedUsers: Set<String>
+    @Binding var collapsedFolders: Set<String>
     let actions: SearchResultActions
 
     var body: some View {
         List(selection: $selection) {
             ForEach(hierarchy.users) { user in
-                DisclosureGroup(isExpanded: member(user.id, of: $expandedUsers)) {
+                DisclosureGroup(isExpanded: expanded(user.id, unless: $collapsedUsers)) {
                     ForEach(user.folders) { folder in
-                        DisclosureGroup(isExpanded: member(folder.id, of: $expandedFolders)) {
+                        DisclosureGroup(isExpanded: expanded(folder.id, unless: $collapsedFolders)) {
                             ForEach(folder.tracks) { track in
-                                TrackResultRow(result: track).tag(ResultNodeID.track(track.id))
+                                TrackResultRow(result: track, model: model) { Task { await model.listen(to: track) } }
+                                    .tag(ResultNodeID.track(track.id))
                             }
                         } label: {
                             FolderResultRow(folder: folder, online: model.connection.isConnected) { actions.downloadFolders([folder]) }
@@ -40,24 +41,34 @@ struct SearchResultsOutline: View {
         } primaryAction: { ids in
             primary(ids)
         }
+        .onKeyPress(.space) {
+            guard let track = actions.resolve(selection).tracks.first, track.file.isAudio else { return .ignored }
+            Task { await model.listen(to: track) }
+            return .handled
+        }
     }
 
-    private func member(_ id: String, of set: Binding<Set<String>>) -> Binding<Bool> {
-        Binding(get: { set.wrappedValue.contains(id) },
-                set: { if $0 { set.wrappedValue.insert(id) } else { set.wrappedValue.remove(id) } })
+    private func expanded(_ id: String, unless collapsed: Binding<Set<String>>) -> Binding<Bool> {
+        Binding(get: { !collapsed.wrappedValue.contains(id) },
+                set: { if $0 { collapsed.wrappedValue.remove(id) } else { collapsed.wrappedValue.insert(id) } })
     }
 
-    /// Return/double-click: tracks download; user and folder rows toggle like Finder's outline.
+    /// Return/double-click: finished downloads play, other tracks download; user and folder rows toggle.
     private func primary(_ ids: Set<ResultNodeID>) {
         let selected = actions.resolve(ids)
+        if selected.tracks.count == 1, let track = selected.tracks.first,
+           model.downloadState(user: track.user, path: track.file.path)?.status == .completed, track.file.isAudio {
+            Task { await model.listen(to: track) }
+            return
+        }
         if !selected.tracks.isEmpty {
             if model.connection.isConnected { actions.downloadTracks(selected.tracks) }
             return
         }
         for id in ids {
             switch id {
-            case .user(let user): expandedUsers.formSymmetricDifference([user])
-            case .folder(let folder): expandedFolders.formSymmetricDifference([folder])
+            case .user(let user): collapsedUsers.formSymmetricDifference([user])
+            case .folder(let folder): collapsedFolders.formSymmetricDifference([folder])
             case .track: break
             }
         }
@@ -65,6 +76,7 @@ struct SearchResultsOutline: View {
 }
 
 /// Resolves outline selections and performs downloads without scanning the full result list.
+@MainActor
 struct SearchResultActions {
     let model: AppModel
     let hierarchy: ResultHierarchy
@@ -95,12 +107,19 @@ struct SearchResultActions {
     }
 
     func downloadTracks(_ tracks: [SearchResult]) {
-        guard !tracks.isEmpty else { return }
-        Task { await model.download(tracks) }
+        let fresh = tracks.filter { model.downloadState(user: $0.user, path: $0.file.path) == nil }
+        guard !fresh.isEmpty else {
+            if !tracks.isEmpty { model.notice = Notice(title: "Already in Downloads", detail: tracks[0].file.name, symbol: "checkmark.circle.fill", action: .showDownloads) }
+            return
+        }
+        model.announceDownload(fresh)
+        Task { await model.download(fresh) }
     }
 
     /// Asks each peer for the complete remote folder, not only the files that matched the search.
     func downloadFolders(_ folders: [ResultFolderNode]) {
+        guard let first = folders.first else { return }
+        model.announceDownload([], wholeFolder: folders.count == 1 ? first.title : "\(folders.count) folders")
         for folder in folders {
             Task { await model.requestFolderDownload(user: folder.user, folder: folder.path) }
         }
@@ -125,6 +144,14 @@ private struct SearchResultMenu: View {
         let folders = actions.folders(for: ids)
         let users = Array(Set(selected.users + folders.map(\.user) + selected.tracks.map(\.user))).sorted()
         let online = model.connection.isConnected
+        if selected.tracks.count == 1, let track = selected.tracks.first, track.file.isAudio {
+            let finished = model.downloadState(user: track.user, path: track.file.path)?.status == .completed
+            Button(finished ? "Play" : "Preview (Stream Before Downloading)", systemImage: finished ? "play.fill" : "play.circle") {
+                Task { await model.listen(to: track) }
+            }
+            .disabled(!finished && !online)
+            Divider()
+        }
         if !selected.tracks.isEmpty {
             Button(selected.tracks.count > 1 ? "Download \(selected.tracks.count) Files" : "Download File") {
                 actions.downloadTracks(selected.tracks)

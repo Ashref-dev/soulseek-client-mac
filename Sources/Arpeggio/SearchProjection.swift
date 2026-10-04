@@ -1,5 +1,6 @@
 import Foundation
 import SoulseekCore
+import ArpeggioServices
 
 struct ProjectionKey: Equatable {
     let token: UInt32?

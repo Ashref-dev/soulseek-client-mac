@@ -1,6 +1,7 @@
 import SwiftUI
 import SoulseekCore
 import ArpeggioServices
+import TransferEngine
 
 /// Peer header: who has it, how much, and whether they can send now.
 struct UserResultRow: View {
@@ -87,20 +88,46 @@ struct FolderResultRow: View {
     }
 }
 
-/// Track row: name leads, secondary facts sit in narrow aligned columns.
+/// Track row: name leads, secondary facts sit in narrow aligned columns. The leading glyph shows
+/// download state live, and audio rows offer a play/preview button on hover.
 struct TrackResultRow: View {
     let result: SearchResult
+    let model: AppModel
+    let listen: () -> Void
+    @State private var hovering = false
+
+    private var transfer: Transfer? { model.downloadState(user: result.user, path: result.file.path) }
+    private var isCurrent: Bool { model.playback.item?.user == result.user && model.playback.item?.remotePath == result.file.path }
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: result.file.symbol)
-                .foregroundStyle(.tertiary)
-                .frame(width: 14)
-                .accessibilityHidden(true)
+            ZStack {
+                if result.file.isAudio && (hovering || isCurrent) {
+                    Button(action: listen) {
+                        Image(systemName: isCurrent && model.playback.isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                            .foregroundStyle(Color.arpeggio)
+                            .contentTransition(.symbolEffect(.replace))
+                    }
+                    .buttonStyle(.plain)
+                    .help(transfer?.status == .completed ? "Play" : "Preview: stream before downloading")
+                    .accessibilityLabel(transfer?.status == .completed ? "Play \(result.file.name)" : "Preview \(result.file.name)")
+                    .transition(.opacity)
+                } else {
+                    TrackStateGlyph(transfer: transfer, symbol: result.file.symbol)
+                }
+            }
+            .frame(width: 18)
             Text(result.file.name)
                 .lineLimit(1)
                 .truncationMode(.middle)
+                .foregroundStyle(transfer?.status == .completed ? Color.secondary : Color.primary)
                 .help(result.file.path)
+            if let transfer, transfer.status != .completed {
+                Text(TrackStateGlyph.caption(transfer))
+                    .font(.caption).foregroundStyle(transfer.status == .failed ? Color.red : Color.arpeggio)
+                    .lineLimit(1)
+                    .transition(.opacity.combined(with: .move(edge: .leading)))
+            }
             Spacer(minLength: 12)
             Group {
                 Text(result.file.quality)
@@ -115,7 +142,54 @@ struct TrackResultRow: View {
             .foregroundStyle(.secondary)
             .monospacedDigit()
         }
+        .onHover { hovering = $0 }
+        .animation(.smooth(duration: 0.2), value: transfer?.status)
+        .animation(.easeOut(duration: 0.12), value: hovering)
         .accessibilityElement(children: .combine)
+    }
+}
+
+/// Leading status for a track: plain icon, queued, connecting, live progress ring, done or failed.
+struct TrackStateGlyph: View {
+    let transfer: Transfer?
+    let symbol: String
+
+    var body: some View {
+        Group {
+            switch transfer?.status {
+            case .transferring:
+                ProgressView(value: transfer?.progress ?? 0)
+                    .progressViewStyle(.circular)
+                    .controlSize(.mini)
+                    .tint(Color.arpeggio)
+            case .negotiating:
+                Image(systemName: "antenna.radiowaves.left.and.right")
+                    .foregroundStyle(Color.arpeggio)
+                    .symbolEffect(.variableColor.iterative, options: .repeating)
+            case .queued:
+                Image(systemName: "clock.fill").foregroundStyle(Color.arpeggio)
+            case .completed:
+                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+            case .failed:
+                Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.red)
+            case .paused:
+                Image(systemName: "pause.circle.fill").foregroundStyle(.secondary)
+            case .cancelled, nil:
+                Image(systemName: symbol).foregroundStyle(.tertiary)
+            }
+        }
+        .contentTransition(.symbolEffect(.replace))
+        .accessibilityLabel(transfer.map { $0.status.label } ?? "")
+    }
+
+    static func caption(_ transfer: Transfer) -> String {
+        switch transfer.status {
+        case .transferring: transfer.progress.formatted(.percent.precision(.fractionLength(0)))
+        case .queued, .negotiating: transfer.queuePosition > 0 ? "Queued #\(transfer.queuePosition)" : "Starting…"
+        case .failed: "Failed"
+        case .paused: "Paused"
+        default: ""
+        }
     }
 }
 
