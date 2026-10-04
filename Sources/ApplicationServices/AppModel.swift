@@ -100,6 +100,7 @@ public final class AppModel {
     @ObservationIgnored var activeSessionGeneration: UInt64?
     @ObservationIgnored var shareWatcher: ShareWatcher?
     @ObservationIgnored var shareChangeTask: Task<Void, Never>?
+    @ObservationIgnored let sharingPolicy = SharingPolicy()
     @ObservationIgnored var watchedPaths: [String] = []
     public let dataDirectory: URL
 
@@ -217,6 +218,7 @@ public final class AppModel {
         error = nil
         loginRevision &+= 1; let revision = loginRevision
         activeSessionGeneration = nil
+        await sharingPolicy.reset()
         let configuration = settings
         if !automatic { reconnectAllowed = false }
         intentionallyOffline = false
@@ -271,6 +273,7 @@ public final class AppModel {
     public func disconnect() async {
         loginRevision &+= 1
         activeSessionGeneration = nil
+        await sharingPolicy.reset()
         intentionallyOffline = true; reconnectAllowed = false
         reconnectTask?.cancel(); reconnectTask = nil; wishlistTask?.cancel(); wishlistTask = nil
         await session.disconnect(); await transferEngine.setConnected(false)
