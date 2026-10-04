@@ -12,28 +12,26 @@ struct NowPlayingBar: View {
 
     var body: some View {
         if let item = playback.item {
-            HStack(spacing: 18) {
-                info(item)
-                    .frame(minWidth: 160, maxWidth: .infinity, alignment: .leading)
-                    .layoutPriority(0)
-                transport
-                    .frame(minWidth: 220, idealWidth: 400, maxWidth: 440)
-                    .layoutPriority(1)
-                ViewThatFits(in: .horizontal) {
-                    actions(item, compact: false)
-                    actions(item, compact: true)
+            GeometryReader { proxy in
+                let allocation = PlayerWidthAllocation(width: proxy.size.width)
+                VStack(spacing: 8) {
+                    info(item, chips: allocation.showsMetadataChips)
+                        .frame(width: allocation.content, alignment: .leading)
+                        .clipped()
+                    HStack(spacing: 16) {
+                        transport.frame(width: allocation.transport)
+                        actions(item, compact: allocation.actions < 240).frame(width: allocation.actions, alignment: .trailing)
+                    }
                 }
-                .frame(maxWidth: .infinity, alignment: .trailing)
-                .layoutPriority(2)
+                .padding(.horizontal, 16).padding(.vertical, 10)
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
+            .frame(height: 160)
             .background(.bar)
             .overlay(alignment: .top) { Divider() }
         }
     }
 
-    private func info(_ item: Playback.Item) -> some View {
+    private func info(_ item: Playback.Item, chips: Bool) -> some View {
         let tags = playback.metadata
         let fileTitle = (item.fileName as NSString).deletingPathExtension
         let byline = [tags.artist, tags.album.map { album in tags.year.map { "\(album) (\($0))" } ?? album }].compactMap { $0 }
@@ -45,21 +43,12 @@ struct NowPlayingBar: View {
                     Text(tags.title ?? fileTitle)
                         .font(.headline)
                         .lineLimit(1).truncationMode(.tail)
-                    if item.isPreview {
-                        Text("PREVIEW")
-                            .font(.system(size: 9, weight: .bold)).tracking(0.7)
-                            .padding(.horizontal, 5).padding(.vertical, 2)
-                            .background(Color.arpeggio.opacity(0.16), in: .capsule)
-                            .foregroundStyle(Color.arpeggio)
-                            .help("Streaming into a temporary cache. Press Download to keep it.")
-                            .fixedSize()
-                    }
                 }
                 Text(byline.isEmpty ? item.subtitle : byline.joined(separator: separator))
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .lineLimit(1).truncationMode(.tail)
-                HStack(spacing: 6) {
+                if chips { HStack(spacing: 6) {
                     Chip(text: item.quality, symbol: "waveform")
                     ArtworkChip(metadata: tags, pixels: playback.artworkPixels)
                     Text(item.fileName)
@@ -68,8 +57,9 @@ struct NowPlayingBar: View {
                         .lineLimit(1).truncationMode(.middle)
                         .help(item.remotePath ?? item.fileURL?.path ?? item.fileName)
                         .layoutPriority(-1)
-                }
+                } }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .help([tags.title ?? fileTitle, byline.joined(separator: separator), item.subtitle].filter { !$0.isEmpty }.joined(separator: "\n"))
     }
@@ -124,6 +114,11 @@ struct NowPlayingBar: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
                 .help(playback.volume == 0 ? "Unmute" : "Mute")
+                .contextMenu {
+                    ForEach([0.25, 0.5, 0.75, 1.0], id: \.self) { level in
+                        Button("Volume \(Int(level * 100))%") { playback.volume = Float(level) }
+                    }
+                }
                 if !compact {
                     Slider(value: Binding(get: { Double(playback.volume) }, set: { playback.volume = Float($0) }), in: 0...1)
                         .controlSize(.mini)
@@ -330,7 +325,7 @@ struct NoticeToast: View {
                 .accessibilityElement(children: .combine)
             }
         }
-        .padding(.bottom, model.playback.item == nil ? 18 : 104)
+        .padding(.bottom, model.playback.item == nil ? 18 : 178)
         .animation(reduceMotion ? .default : .spring(duration: 0.4, bounce: 0.3), value: model.notice?.id)
         .allowsHitTesting(model.notice != nil)
     }
