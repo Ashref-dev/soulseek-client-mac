@@ -50,6 +50,9 @@ struct RootView: View {
         .sheet(isPresented: $navigator.showPalette) { CommandPalette(model: model, navigator: navigator) }
         .sheet(item: $navigator.prompt) { prompt in UserPromptSheet(prompt: prompt, model: model, navigator: navigator) }
         .sheet(item: $navigator.profile) { request in UserProfileSheet(username: request.username, model: model, navigator: navigator) }
+        .sheet(item: Binding(get: { model.documentPreview }, set: { value in
+            if value == nil { Task { await model.closeDocumentPreview() } }
+        })) { preview in DocumentPreviewView(model: model, identity: preview.id) }
         .task {
             await bootstrap.start(model)
             if model.settings.onboardingVersion == nil { navigator.showOnboarding = true }
