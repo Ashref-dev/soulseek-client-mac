@@ -109,7 +109,7 @@ struct TransfersView: View {
 
     private var items: [Transfer] {
         model.transfers
-            .filter { $0.upload == upload }
+            .filter { $0.upload == upload && !$0.isPreview }
             .filter { filter.isEmpty || $0.file.path.localizedCaseInsensitiveContains(filter) || $0.user.localizedCaseInsensitiveContains(filter) }
             .sorted { $0.file.path.localizedStandardCompare($1.file.path) == .orderedAscending }
     }
@@ -137,12 +137,12 @@ struct TransfersView: View {
                 }
                 Button("Cancel", systemImage: "xmark") { act(selected, .cancel) }
                     .disabled(!selected.contains { !$0.status.isFinished })
-                Menu("Clear", systemImage: "trash") {
-                    Button("Clear Finished") { Task { await engine.clearFinished(upload: upload) } }
-                    Button("Clear Failed") { Task { await engine.clearFailed(upload: upload) } }
-                }
-                .disabled(!model.transfers.contains { $0.upload == upload && ($0.status.isFinished || $0.status == .failed) })
-                .help("Remove finished or failed history; partial files are kept")
+                Button("Clear Completed", systemImage: "checkmark.circle.badge.xmark") { Task { await engine.clearFinished(upload: upload) } }
+                    .disabled(!model.transfers.contains { $0.upload == upload && !$0.isPreview && $0.status.isFinished })
+                    .help(upload ? "Remove finished uploads from this list" : "Remove finished downloads from this list. Files stay in your download folder.")
+                Button("Clear Failed", systemImage: "exclamationmark.triangle") { Task { await engine.clearFailed(upload: upload) } }
+                    .disabled(!model.transfers.contains { $0.upload == upload && !$0.isPreview && $0.status == .failed })
+                    .help("Remove failed transfers from this list")
             }
         }
     }
@@ -178,16 +178,27 @@ struct TransfersView: View {
                         }
                     }
                 } icon: {
-                    Image(systemName: transfer.file.symbol).foregroundStyle(.tertiary)
+                    if transfer.status == .completed && transfer.file.isAudio && transfer.localURL != nil {
+                        Button { model.play(transfer) } label: {
+                            Image(systemName: isPlaying(transfer) ? "speaker.wave.2.fill" : "play.circle.fill")
+                                .foregroundStyle(Color.arpeggio)
+                                .symbolEffect(.variableColor.iterative, options: .repeating, isActive: isPlaying(transfer))
+                        }
+                        .buttonStyle(.plain)
+                        .help("Play")
+                        .accessibilityLabel("Play \(transfer.name)")
+                    } else {
+                        Image(systemName: transfer.file.symbol).foregroundStyle(.tertiary)
+                    }
                 }
                 .help(transfer.file.path)
             }
             .width(min: 200, ideal: 360)
             TableColumn("Progress") { TransferProgress(transfer: $0) }.width(min: 140, ideal: 190)
             TableColumn("Size") { Text(Format.bytes($0.size)).monospacedDigit().foregroundStyle(.secondary) }.width(min: 56, ideal: 72)
-            TableColumn("Speed") { Text($0.status == .transferring ? Format.speed($0.speed) : "—").monospacedDigit().foregroundStyle(.secondary) }
+            TableColumn("Speed") { Text($0.status == .transferring ? Format.speed($0.speed) : "-").monospacedDigit().foregroundStyle(.secondary) }
                 .width(min: 56, ideal: 76)
-            TableColumn("Remaining") { Text($0.status == .transferring ? Format.duration($0.eta ?? 0) : "—").monospacedDigit().foregroundStyle(.secondary) }
+            TableColumn("Remaining") { Text($0.status == .transferring ? Format.duration($0.eta ?? 0) : "-").monospacedDigit().foregroundStyle(.secondary) }
                 .width(min: 56, ideal: 76)
         } rows: {
             ForEach(TransferRelease.group(rows)) { release in
@@ -205,9 +216,9 @@ struct TransfersView: View {
         .contextMenu(forSelectionType: Transfer.ID.self) { ids in
             menu(model.transfers.filter { ids.contains($0.id) })
         } primaryAction: { ids in
-            if let url = model.transfers.first(where: { ids.contains($0.id) })?.localURL {
-                NSWorkspace.shared.activateFileViewerSelecting([url])
-            }
+            guard let transfer = model.transfers.first(where: { ids.contains($0.id) }) else { return }
+            if transfer.status == .completed, transfer.file.isAudio, transfer.localURL != nil { model.play(transfer) }
+            else if let url = transfer.localURL { NSWorkspace.shared.activateFileViewerSelecting([url]) }
         }
         .onKeyPress(.space) {
             guard let url = selected.first?.localURL else { return .ignored }
@@ -227,6 +238,9 @@ struct TransfersView: View {
             .disabled(!transfers.contains { !$0.status.isFinished })
         Divider()
         let urls = transfers.compactMap(\.localURL)
+        if let playable = transfers.first(where: { $0.status == .completed && $0.file.isAudio && $0.localURL != nil }) {
+            Button("Play", systemImage: "play.fill") { model.play(playable) }
+        }
         Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting(urls) }
             .disabled(urls.isEmpty)
         Button("Quick Look") { preview = urls.first }
@@ -243,15 +257,48 @@ struct TransfersView: View {
         }
     }
 
+    private func isPlaying(_ transfer: Transfer) -> Bool {
+        model.playback.isPlaying && model.playback.item?.fileURL?.path == transfer.destination
+    }
+
     private func summary(_ rows: [Transfer]) -> some View {
         let active = rows.filter { $0.status == .transferring }
         let speed = active.reduce(0) { $0 + $1.speed }
-        let slots = upload ? model.settings.uploadSlots : model.settings.downloadSlots
         return HStack(spacing: 16) {
-            Text("\(active.count) of \(slots) slots in use")
-            if speed > 0 { Text(Format.speed(speed)).monospacedDigit() }
+            Stepper(value: slotBinding, in: 1...20) {
+                Label("\(active.count) of \(upload ? model.settings.uploadSlots : model.settings.downloadSlots) slots", systemImage: "square.stack.3d.up")
+                    .monospacedDigit()
+            }
+            .help(upload ? "How many people can download from you at once" : "How many files download at once")
+            Menu {
+                Picker("Speed Limit", selection: limitBinding) {
+                    Text("Unlimited").tag(0)
+                    Divider()
+                    ForEach([128, 256, 512, 1024, 2048, 5120, 10240], id: \.self) { Text(Self.limitLabel($0)).tag($0) }
+                    if ![0, 128, 256, 512, 1024, 2048, 5120, 10240].contains(limitBinding.wrappedValue) {
+                        Text(Self.limitLabel(limitBinding.wrappedValue)).tag(limitBinding.wrappedValue)
+                    }
+                }
+                .pickerStyle(.inline)
+            } label: {
+                Label(limitBinding.wrappedValue == 0 ? "No speed limit" : "Max \(Self.limitLabel(limitBinding.wrappedValue))", systemImage: "gauge.with.dots.needle.33percent")
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help(upload ? "Limit how fast others download from you" : "Limit download speed")
+            if speed > 0 {
+                Label(Format.speed(speed), systemImage: upload ? "arrow.up" : "arrow.down")
+                    .monospacedDigit().foregroundStyle(Color.arpeggio)
+                    .contentTransition(.numericText())
+            }
             Spacer()
-            Text("\(rows.filter { $0.status == .completed }.count) completed")
+            if !upload {
+                Toggle("Clear when finished", isOn: Binding(get: { model.settings.autoClearDownloads ?? false },
+                                                             set: { model.settings.autoClearDownloads = $0; Task { await model.saveSettings() } }))
+                    .toggleStyle(.checkbox)
+                    .help("Remove finished downloads from this list automatically. Files stay in your download folder.")
+            }
+            Text("\(rows.filter { $0.status == .completed }.count) completed").monospacedDigit()
             if !upload {
                 Button("Open Folder", systemImage: "folder") {
                     NSWorkspace.shared.open(URL(fileURLWithPath: model.settings.downloadDirectory))
@@ -262,7 +309,26 @@ struct TransfersView: View {
         }
         .font(.caption)
         .foregroundStyle(.secondary)
+        .controlSize(.small)
         .padding(.horizontal, 14).padding(.vertical, 6)
+    }
+
+    private var slotBinding: Binding<Int> {
+        Binding(get: { upload ? model.settings.uploadSlots : model.settings.downloadSlots }, set: { value in
+            if upload { model.settings.uploadSlots = value } else { model.settings.downloadSlots = value }
+            Task { await model.saveSettings() }
+        })
+    }
+
+    private var limitBinding: Binding<Int> {
+        Binding(get: { (upload ? model.settings.uploadLimitKB : model.settings.downloadLimitKB) ?? 0 }, set: { value in
+            if upload { model.settings.uploadLimitKB = value } else { model.settings.downloadLimitKB = value }
+            Task { await model.saveSettings() }
+        })
+    }
+
+    static func limitLabel(_ kilobytes: Int) -> String {
+        kilobytes >= 1024 ? "\((Double(kilobytes) / 1024).formatted(.number.precision(.fractionLength(0...1)))) MB/s" : "\(kilobytes) KB/s"
     }
 
     private func act(_ transfers: [Transfer], _ action: TransferAction) {

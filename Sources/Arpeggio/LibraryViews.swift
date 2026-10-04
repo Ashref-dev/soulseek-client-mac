@@ -84,68 +84,6 @@ struct BrowseView: View {
     }
 }
 
-struct SharedFilesView: View {
-    let model: AppModel
-
-    var body: some View {
-        Group {
-            if model.settings.sharedFolders.isEmpty {
-                ContentUnavailableView {
-                    Label("Nothing Shared Yet", systemImage: "externaldrive")
-                } description: {
-                    Text("Add music folders so other people can browse and download from you.")
-                } actions: {
-                    SettingsLink { Text("Open Sharing Settings…") }
-                }
-            } else if model.sharedLibrary.isEmpty {
-                ContentUnavailableView {
-                    Label(model.indexing ? "Indexing…" : "No Shareable Files", systemImage: "externaldrive")
-                } description: {
-                    if model.indexing { ProgressView().controlSize(.small) }
-                    else { Text("The shared folders are empty or unreadable.") }
-                }
-            } else {
-                LibraryBrowser(folders: model.sharedLibrary, identity: "local-\(model.sharedCount)-\(model.sharedBytes)", rootTitle: "My Shares") { files, folder in
-                    localMenu(files: files, folder: folder)
-                } onOpen: { files in
-                    NSWorkspace.shared.activateFileViewerSelecting(files.compactMap(localURL))
-                }
-            }
-        }
-        .navigationTitle("Shared Files")
-        .navigationSubtitle(model.sharedCount > 0 ? "\(model.sharedCount.formatted()) files · \(Format.bytes(model.sharedBytes))" : "")
-        .toolbar {
-            ToolbarItemGroup {
-                if model.indexing { ProgressView().controlSize(.small) }
-                Button("Rescan", systemImage: "arrow.clockwise") { Task { await model.rescanShares() } }
-                    .disabled(model.indexing || model.settings.sharedFolders.isEmpty)
-                SettingsLink { Label("Sharing Settings", systemImage: "gearshape") }
-            }
-        }
-    }
-
-    @ViewBuilder private func localMenu(files: [SharedFile], folder: String?) -> some View {
-        let urls = files.isEmpty ? [folder.flatMap { localURL(path: $0) }].compactMap { $0 } : files.compactMap(localURL)
-        Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting(urls) }.disabled(urls.isEmpty)
-        Button("Copy Share Path") {
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(files.isEmpty ? (folder ?? "") : files.map(\.path).joined(separator: "\n"), forType: .string)
-        }
-    }
-
-    private func localURL(_ file: SharedFile) -> URL? { localURL(path: file.path) }
-
-    /// Maps a virtual share path ("Root\\Sub\\file") back to the configured local folder.
-    private func localURL(path: String) -> URL? {
-        let parts = path.split(separator: "\\").map(String.init)
-        guard let head = parts.first,
-              let share = model.settings.sharedFolders.first(where: { URL(fileURLWithPath: $0.path).resolvingSymlinksInPath().lastPathComponent == head })
-        else { return nil }
-        let url = parts.dropFirst().reduce(URL(fileURLWithPath: share.path).resolvingSymlinksInPath()) { $0.appendingPathComponent($1) }
-        return FileManager.default.fileExists(atPath: url.path) ? url : nil
-    }
-}
-
 struct WishlistView: View {
     let model: AppModel
     let navigator: Navigator

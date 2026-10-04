@@ -47,7 +47,7 @@ struct UsersView: View {
                     .width(56)
                     TableColumn("Note") { Text($0.note).foregroundStyle(.secondary).lineLimit(1) }
                     TableColumn("Last Seen", value: \.lastSeenSort) { user in
-                        Text(user.lastSeen.map { $0.formatted(.relative(presentation: .named)) } ?? "—").foregroundStyle(.secondary)
+                        Text(user.lastSeen.map { $0.formatted(.relative(presentation: .named)) } ?? "-").foregroundStyle(.secondary)
                     }
                     .width(min: 80, ideal: 110)
                 }

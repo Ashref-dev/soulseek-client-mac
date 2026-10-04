@@ -3,7 +3,7 @@ import ArpeggioServices
 import SoulseekCore
 
 enum SidebarSection: String, CaseIterable, Identifiable, Hashable {
-    case search, downloads, uploads, browse, wishlist, messages, rooms, users, shared
+    case search, downloads, uploads, browse, wishlist, messages, rooms, users, shared, received, statistics
 
     var id: Self { self }
 
@@ -18,6 +18,8 @@ enum SidebarSection: String, CaseIterable, Identifiable, Hashable {
         case .rooms: "Rooms"
         case .users: "Users"
         case .shared: "Shared Files"
+        case .received: "Received Searches"
+        case .statistics: "Statistics"
         }
     }
 
@@ -32,8 +34,12 @@ enum SidebarSection: String, CaseIterable, Identifiable, Hashable {
         case .rooms: "person.3"
         case .users: "person.crop.circle"
         case .shared: "externaldrive"
+        case .received: "dot.radiowaves.left.and.right"
+        case .statistics: "chart.bar.xaxis"
         }
     }
+
+    var modifiers: EventModifiers { self == .received ? [.command, .shift] : .command }
 
     var shortcut: KeyEquivalent {
         switch self {
@@ -46,6 +52,8 @@ enum SidebarSection: String, CaseIterable, Identifiable, Hashable {
         case .rooms: "7"
         case .users: "8"
         case .shared: "9"
+        case .received: "0"
+        case .statistics: "0"
         }
     }
 }
@@ -72,6 +80,10 @@ final class Navigator {
     var selectedRoom: String?
     var searchFocusRequest = 0
     var profile: ProfileRequest?
+    var confirmSignOut = false
+    var showOnboarding = false
+    var expandAllRequest = 0
+    var collapseAllRequest = 0
 
     func go(_ section: SidebarSection) { self.section = section }
 
@@ -133,21 +145,18 @@ enum Format {
         ByteCountFormatter.string(fromByteCount: Int64(clamping: value), countStyle: .file)
     }
     static func speed(_ bytesPerSecond: Double) -> String {
-        bytesPerSecond > 0 ? bytes(UInt64(bytesPerSecond)) + "/s" : "—"
+        bytesPerSecond > 0 ? bytes(UInt64(bytesPerSecond)) + "/s" : "-"
     }
     static func duration(_ seconds: Double) -> String {
-        guard seconds.isFinite, seconds > 0 else { return "—" }
+        guard seconds.isFinite, seconds > 0 else { return "-" }
         return Duration.seconds(seconds).formatted(.units(allowed: [.hours, .minutes, .seconds], width: .narrow, maximumUnitCount: 2))
     }
     static func clock(_ seconds: UInt32) -> String {
-        guard seconds > 0 else { return "—" }
+        guard seconds > 0 else { return "-" }
         return String(format: "%d:%02d", seconds / 60, seconds % 60)
     }
 }
 
 extension SharedFile {
-    var bitrate: UInt32 { attributes[0] ?? 0 }
-    var length: UInt32 { attributes[1] ?? 0 }
-    var isAudio: Bool { ["FLAC", "MP3", "OGG", "OPUS", "M4A", "AAC", "WAV", "AIFF", "AIF", "ALAC", "APE", "WV"].contains(format) }
     var symbol: String { isAudio ? "music.note" : "doc" }
 }

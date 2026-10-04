@@ -18,7 +18,7 @@ struct ArpeggioApp: App {
     }
 
     var body: some Scene {
-        WindowGroup("Arpeggio", id: "main") {
+        Window("Arpeggio", id: "main") {
             if let model {
                 RootView(model: model, bootstrap: bootstrap)
                     .task { delegate.model = model }
@@ -27,8 +27,23 @@ struct ArpeggioApp: App {
             }
         }
         .defaultSize(width: 1180, height: 760)
+        .defaultLaunchBehavior(.presented)
         .windowResizability(.contentMinSize)
         .commands { ArpeggioCommands(model: model) }
+
+        MenuBarExtra(isInserted: Binding(get: { model?.menuBarExtraVisible ?? false }, set: { value in
+            guard let model, value != model.menuBarExtraVisible else { return }
+            model.settings.menuBarIcon = value
+            Task { await model.saveSettings() }
+        })) {
+            if let model {
+                MenuBarPanel(model: model)
+                    .task { delegate.model = model }
+            }
+        } label: {
+            if let model { MenuBarLabel(model: model, bootstrap: bootstrap) } else { Image(systemName: "music.quarternote.3") }
+        }
+        .menuBarExtraStyle(.window)
 
         Settings {
             if let model {
@@ -44,14 +59,19 @@ struct ArpeggioApp: App {
     }
 }
 
-/// Starts the shared model exactly once, regardless of how many windows are opened.
+/// Starts the shared model exactly once, whether the window or the menu bar icon appears first.
+/// Every caller waits until stored state is loaded; signing in continues in the background.
 @MainActor
 final class Bootstrap {
-    private var started = false
+    private var loading: Task<Void, Never>?
     func start(_ model: AppModel) async {
-        guard !started else { return }
-        started = true
-        await model.start()
+        if loading == nil {
+            loading = Task {
+                await model.start()
+                Task { await model.connectAtLaunch() }
+            }
+        }
+        await loading?.value
     }
 }
 
@@ -64,6 +84,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate()
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        NSApp.setActivationPolicy(.regular)
+        return true
+    }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let model else { return .terminateNow }
         guard !terminating else { return .terminateLater }

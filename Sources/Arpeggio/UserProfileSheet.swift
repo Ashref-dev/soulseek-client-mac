@@ -112,7 +112,7 @@ struct UserProfileSheet: View {
     @ViewBuilder private func row(_ title: String, _ value: String?) -> some View {
         GridRow {
             Text(title).foregroundStyle(.secondary).gridColumnAlignment(.trailing)
-            Text(value ?? "—").textSelection(.enabled).lineLimit(2)
+            Text(value ?? "-").textSelection(.enabled).lineLimit(2)
         }
     }
 

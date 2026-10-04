@@ -19,10 +19,26 @@ struct RootView: View {
             detail
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .safeAreaInset(edge: .top, spacing: 0) {
-                    if let error = model.error {
-                        ErrorBanner(model: model, message: error) { model.error = nil }
+                    VStack(spacing: 0) {
+                        if let error = model.error {
+                            ErrorBanner(model: model, message: error) { model.error = nil }
+                        }
+                        UpdateBanner(model: model)
                     }
                 }
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    if model.playback.item != nil {
+                        NowPlayingBar(model: model, navigator: navigator)
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
+                }
+                .overlay(alignment: .bottom) { NoticeToast(model: model, navigator: navigator) }
+                .animation(reduceMotion ? nil : .spring(duration: 0.35, bounce: 0.2), value: model.playback.item?.transferID ?? model.playback.item?.title)
+        }
+        .confirmationDialog("Sign out of \(model.settings.username)?", isPresented: $navigator.confirmSignOut) {
+            Button("Sign Out", role: .destructive) { Task { await model.signOut() } }
+        } message: {
+            Text("Arpeggio disconnects and forgets the saved password. Your downloads, history and settings stay on this Mac.")
         }
         .frame(minWidth: 880, minHeight: 560)
         .tint(.arpeggio)
@@ -30,13 +46,24 @@ struct RootView: View {
         .environment(\.defaultMinListRowHeight, model.settings.compact ? 22 : 28)
         .focusedSceneValue(\.navigator, navigator)
         .sheet(isPresented: $navigator.showLogin) { LoginSheet(model: model) }
+        .sheet(isPresented: $navigator.showOnboarding) { OnboardingView(model: model, navigator: navigator) }
         .sheet(isPresented: $navigator.showPalette) { CommandPalette(model: model, navigator: navigator) }
         .sheet(item: $navigator.prompt) { prompt in UserPromptSheet(prompt: prompt, model: model, navigator: navigator) }
         .sheet(item: $navigator.profile) { request in UserProfileSheet(username: request.username, model: model, navigator: navigator) }
-        .task { await bootstrap.start(model) }
-        .onAppear { navigator.section = SidebarSection(rawValue: restoredSection) ?? .search }
+        .task {
+            await bootstrap.start(model)
+            if model.settings.onboardingVersion == nil { navigator.showOnboarding = true }
+        }
+        .onAppear {
+            navigator.section = SidebarSection(rawValue: restoredSection) ?? .search
+            NSApp.setActivationPolicy(.regular)
+        }
+        .onDisappear {
+            if model.settings.hideDockWhenClosed == true, model.settings.showsMenuBarIcon { NSApp.setActivationPolicy(.accessory) }
+        }
         .onChange(of: navigator.section) { _, section in if let section { restoredSection = section.rawValue } }
         .animation(reduceMotion ? nil : .smooth(duration: 0.2), value: model.error)
+        .onChange(of: model.settings.onboardingVersion) { _, version in if version == nil { navigator.showOnboarding = true } }
         .onChange(of: model.unread.count) { _, count in NSApp.dockTile.badgeLabel = count > 0 ? String(count) : nil }
     }
 
@@ -50,7 +77,9 @@ struct RootView: View {
         case .messages: MessagesView(model: model, navigator: navigator)
         case .rooms: RoomsView(model: model, navigator: navigator)
         case .users: UsersView(model: model, navigator: navigator)
-        case .shared: SharedFilesView(model: model)
+        case .shared: SharedFilesView(model: model, navigator: navigator)
+        case .received: ReceivedSearchesView(model: model, navigator: navigator)
+        case .statistics: StatisticsView(model: model)
         }
     }
 }
@@ -75,64 +104,29 @@ struct Sidebar: View {
                 row(.rooms, badge: model.joinedRooms.count)
                 row(.users)
             }
-            Section("Library") { row(.shared) }
+            Section("Library") {
+                row(.shared)
+                row(.received)
+                row(.statistics)
+            }
         }
         .listStyle(.sidebar)
         .safeAreaInset(edge: .bottom, spacing: 0) { AccountFooter(model: model, navigator: navigator) }
     }
 
     private func row(_ section: SidebarSection, badge: Int = 0) -> some View {
-        Label(section.title, systemImage: section.symbol)
-            .badge(badge)
-            .tag(section)
+        Label {
+            Text(section.title)
+        } icon: {
+            Image(systemName: section.symbol)
+                .symbolEffect(.bounce.down, value: section == .downloads ? badge : 0)
+        }
+        .badge(badge)
+        .tag(section)
     }
 
     private func activeCount(upload: Bool) -> Int {
-        model.transfers.filter { $0.upload == upload && [.queued, .negotiating, .transferring].contains($0.status) }.count
-    }
-}
-
-struct AccountFooter: View {
-    let model: AppModel
-    let navigator: Navigator
-
-    private var account: String {
-        model.connection.isConnected ? model.activeAccount : (model.settings.username.isEmpty ? "No Account" : model.settings.username)
-    }
-
-    var body: some View {
-        Button { navigator.showLogin = true } label: {
-            HStack(spacing: 10) {
-                Circle()
-                    .fill(model.connection.tint)
-                    .frame(width: 8, height: 8)
-                    .shadow(color: model.connection.tint.opacity(0.6), radius: 3)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(account)
-                        .font(.callout.weight(.medium))
-                        .lineLimit(1)
-                    HStack(spacing: 3) {
-                        Text(model.connection.label).foregroundStyle(.secondary).fixedSize()
-                        Text("·").foregroundStyle(.tertiary).fixedSize()
-                        ServerTargetText(settings: model.settings, compact: true)
-                    }
-                    .font(.caption)
-                    .lineLimit(1)
-                }
-                Spacer(minLength: 0)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 9)
-            .contentShape(.rect)
-        }
-        .buttonStyle(.plain)
-        .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 12))
-        .padding(10)
-        .help("Account and connection · \(model.settings.targetDescription), \(model.settings.serverEndpoint)")
-        .accessibilityLabel("Account: \(model.settings.username.isEmpty ? "none" : model.settings.username), \(model.connection.label), \(model.settings.targetDescription) \(model.settings.serverEndpoint)")
+        model.transfers.filter { $0.upload == upload && !$0.isPreview && [.queued, .negotiating, .transferring].contains($0.status) }.count
     }
 }
 
