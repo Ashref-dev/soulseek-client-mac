@@ -6,6 +6,7 @@ public actor MockSoulseekServer {
     let listener: NWListener
     var clients: [String: FramedConnection] = [:]
     var ports: [String: UInt32] = [:]
+    var shares: [String: UInt32] = [:]
     var messageID: UInt32 = 0
     var rooms: [String: Set<String>] = [:]
     public var trace: [String] = []
@@ -59,6 +60,14 @@ public actor MockSoulseekServer {
                     var interval = WireWriter(); interval.uint(60)
                     try await connection.send(code: 104, payload: interval.data)
                 case 2: ports[user] = try reader.uint()
+                case 35:
+                    _ = try reader.uint(); shares[user] = try reader.uint()
+                case 36:
+                    let target = try reader.string()
+                    if let files = shares[target] {
+                        var response = WireWriter(); response.string(target); response.uint(0); response.uint(0); response.uint(0); response.uint(files)
+                        try await connection.send(code: 36, payload: response.data)
+                    }
                 case 3:
                     let target = try reader.string()
                     var response = WireWriter(); response.string(target); response.uint(0x7f000001)
