@@ -120,16 +120,9 @@ actor PortMapper {
         }
         for location in locations {
             guard let host = location.host, let data = await fetch(location, limit: 256 * 1024),
-                  let description = String(data: data, encoding: .utf8) else { continue }
-            for service in ["WANIPConnection", "WANPPPConnection"] {
-                guard let block = description.components(separatedBy: "<service>").first(where: { $0.contains(":service:\(service):") }),
-                      let type = block.between("<serviceType>", "</serviceType>"),
-                      let path = block.between("<controlURL>", "</controlURL>"),
-                      let control = URL(string: path, relativeTo: location)?.absoluteURL,
-                      isDeviceURL(control, host: host),
-                      let client = await UDP.localAddress(toward: host) else { continue }
-                return UPnPDevice(control: control, service: type, client: client)
-            }
+                  let service = UPnPDescription.read(data, location: location),
+                  let client = await UDP.localAddress(toward: host) else { continue }
+            return UPnPDevice(control: service.control, service: service.type, client: client)
         }
         return nil
     }
@@ -137,7 +130,7 @@ actor PortMapper {
     /// Router URLs must point back at the device that answered discovery, so a hostile reply on the
     /// local network can't make Arpeggio send requests anywhere else.
     static func isDeviceURL(_ url: URL, host: String) -> Bool {
-        ["http", "https"].contains(url.scheme?.lowercased() ?? "") && url.host == host && url.user == nil
+        ["http", "https"].contains(url.scheme?.lowercased() ?? "") && url.host == host && url.user == nil && url.password == nil && url.fragment == nil && (url.port.map { (1...65535).contains($0) } ?? true)
     }
 
     static let session = URLSession(configuration: {
