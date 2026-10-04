@@ -80,6 +80,7 @@ struct LibraryBrowser<Actions: View>: View {
     var rootTitle = "All Folders"
     @ViewBuilder let fileMenu: (_ files: [SharedFile], _ folder: String?) -> Actions
     var onOpen: ([SharedFile]) -> Void = { _ in }
+    var onPreview: (SharedFile) -> Void = { _ in }
 
     @State private var tree: [FolderNode] = []
     @State private var index: [String: FolderNode] = [:]
@@ -182,6 +183,11 @@ struct LibraryBrowser<Actions: View>: View {
                 let picked = rows.filter { ids.contains($0.id) }
                 if picked.count == 1, let node = picked.first?.folder { open(node.id) }
                 else { onOpen(picked.compactMap(\.file)) }
+            }
+            .onKeyPress(.space) {
+                guard let file = rows.first(where: { selection.contains($0.id) })?.file,
+                      PreviewFormat.classify(file.name) != nil else { return .ignored }
+                onPreview(file); return .handled
             }
         }
     }

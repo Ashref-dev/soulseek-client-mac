@@ -48,6 +48,8 @@ struct BrowseView: View {
                     remoteMenu(user: user, files: files, folder: folder)
                 } onOpen: { files in
                     download(user: user, files)
+                } onPreview: { file in
+                    Task { await model.listen(to: SearchResult(user: user, file: file, freeSlot: false, speed: 0, queue: 0)) }
                 }
             }
         } else {
@@ -64,6 +66,11 @@ struct BrowseView: View {
 
     @ViewBuilder private func remoteMenu(user: String, files: [SharedFile], folder: String?) -> some View {
         let online = model.connection.isConnected
+        if files.count == 1, let file = files.first, PreviewFormat.classify(file.name) != nil {
+            Button("Preview", systemImage: "play.circle") {
+                Task { await model.listen(to: SearchResult(user: user, file: file, freeSlot: false, speed: 0, queue: 0)) }
+            }
+        }
         if !files.isEmpty {
             Button(files.count > 1 ? "Download \(files.count) Files" : "Download") { download(user: user, files) }.disabled(!online)
         }
