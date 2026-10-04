@@ -9,6 +9,7 @@ struct NowPlayingBar: View {
     let model: AppModel
     let navigator: Navigator
     private var playback: Playback { model.playback }
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         if let item = playback.item {
@@ -73,7 +74,7 @@ struct NowPlayingBar: View {
                     Image(systemName: playback.isPlaying ? "pause.circle.fill" : "play.circle.fill")
                         .font(.system(size: 32))
                         .foregroundStyle(Color.arpeggio)
-                        .contentTransition(.symbolEffect(.replace))
+                        .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
                 }
                 .disabled(playback.failure != nil)
                 .help(playback.isPlaying ? "Pause" : "Play")
@@ -100,7 +101,7 @@ struct NowPlayingBar: View {
                     .transition(.opacity)
             }
         }
-        .animation(.easeOut(duration: 0.2), value: playback.failure ?? playback.status)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: playback.failure ?? playback.status)
     }
 
     private func actions(_ item: Playback.Item, compact: Bool) -> some View {
@@ -108,7 +109,7 @@ struct NowPlayingBar: View {
             HStack(spacing: 6) {
                 Button { playback.volume = playback.volume == 0 ? 1 : 0 } label: {
                     Image(systemName: playback.volume == 0 ? "speaker.slash.fill" : playback.volume < 0.5 ? "speaker.wave.1.fill" : "speaker.wave.2.fill")
-                        .contentTransition(.symbolEffect(.replace))
+                        .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
                         .frame(width: 18)
                 }
                 .buttonStyle(.plain)
@@ -182,6 +183,7 @@ private struct CoverArt: View {
     let image: CGImage?
     let playing: Bool
     @State private var expanded = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Button { if image != nil { expanded = true } } label: {
@@ -193,14 +195,14 @@ private struct CoverArt: View {
                     Image(systemName: "waveform")
                         .font(.system(size: 22, weight: .semibold))
                         .foregroundStyle(.white)
-                        .symbolEffect(.variableColor.iterative, options: .repeating, isActive: playing)
+                        .symbolEffect(.variableColor.iterative, options: .repeating, isActive: playing && !reduceMotion)
                 }
             }
             .frame(width: 58, height: 58)
             .clipShape(.rect(cornerRadius: 9))
             .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(.primary.opacity(0.08)))
             .shadow(color: .black.opacity(0.18), radius: 4, y: 2)
-            .animation(.easeOut(duration: 0.3), value: image != nil)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.3), value: image != nil)
         }
         .buttonStyle(.plain)
         .help(image != nil ? "Show cover art" : "No embedded cover art")
@@ -229,6 +231,7 @@ private struct Scrubber: View {
     let seek: (Double) -> Void
     @State private var dragging: Double?
     @State private var hover: Double?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         GeometryReader { proxy in
@@ -274,7 +277,7 @@ private struct Scrubber: View {
             .gesture(DragGesture(minimumDistance: 0)
                 .onChanged { dragging = min(1, max(0, $0.location.x / width)) }
                 .onEnded { value in seek(min(1, max(0, value.location.x / width))); dragging = nil })
-            .animation(.spring(duration: 0.25, bounce: 0.2), value: engaged)
+            .animation(reduceMotion ? nil : .spring(duration: 0.25, bounce: 0.2), value: engaged)
             .opacity(waiting ? 0.65 : 1)
         }
         .frame(height: 22)
@@ -338,6 +341,7 @@ private struct KeepButton: View {
     let item: Playback.Item
     let compact: Bool
     @State private var working = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var transfer: Transfer? { item.transferID.flatMap { id in model.transfers.first { $0.id == id } } }
 
@@ -350,7 +354,7 @@ private struct KeepButton: View {
                 } label: {
                     Label("Download", systemImage: working ? "ellipsis.circle" : "arrow.down.circle.fill")
                         .labelStyle(AdaptiveLabel(compact: compact))
-                        .symbolEffect(.pulse, isActive: working)
+                        .symbolEffect(.pulse, isActive: working && !reduceMotion)
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
@@ -383,8 +387,8 @@ private struct KeepButton: View {
             }
         }
         .fixedSize()
-        .animation(.spring(duration: 0.35, bounce: 0.3), value: item.isPreview)
-        .animation(.spring(duration: 0.35, bounce: 0.3), value: transfer?.status)
+        .animation(reduceMotion ? nil : .spring(duration: 0.35, bounce: 0.3), value: item.isPreview)
+        .animation(reduceMotion ? nil : .spring(duration: 0.35, bounce: 0.3), value: transfer?.status)
     }
 }
 
