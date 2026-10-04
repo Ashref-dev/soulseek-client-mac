@@ -32,6 +32,10 @@ public struct AppSettings: Codable, Sendable {
     public var queuedUploadsPerUser: Int?
     public var autoClearDownloads: Bool?
     public var checkForUpdates: Bool?
+    public var requireSharing: Bool?
+    public var sharingRequiredMessage: String?
+    public var natPMPEnabled: Bool?
+    public var upnpEnabled: Bool?
     public init() {}
     public var connectsAutomatically: Bool { autoConnect ?? true }
     public var downloadLayout: DownloadLayout { DownloadLayout(userFolders: userFolders ?? false, fullPaths: fullRemotePaths ?? false) }
@@ -39,6 +43,10 @@ public struct AppSettings: Codable, Sendable {
     public var goesAwayWhenIdle: Bool { awayWhenIdle ?? true }
     public var idleAwayMinutes: Int { min(120, max(1, idleMinutes ?? 10)) }
     public var mapsPorts: Bool { portMapping ?? true }
+    public var usesNATPMP: Bool { natPMPEnabled ?? true }
+    public var usesUPnP: Bool { upnpEnabled ?? true }
+    public var requiresSharing: Bool { requireSharing ?? false }
+    public var sharingMessage: String { sharingRequiredMessage ?? "You must share files in order to download from me." }
     public var showsMenuBarIcon: Bool { menuBarIcon ?? true }
     public var uploadQueueLimit: Int { max(0, queuedUploadsPerUser ?? 200) }
     public var checksForUpdates: Bool { checkForUpdates ?? true }
@@ -50,7 +58,7 @@ public struct AppSettings: Codable, Sendable {
         (0...1_000_000).contains(downloadLimitKB ?? 0) && (0...1_000_000).contains(uploadLimitKB ?? 0) &&
         (0...10_000).contains(queuedUploadsPerUser ?? 0) && (1...120).contains(idleMinutes ?? 10) &&
         (0...120).contains(searchIdleSeconds ?? 15) && !downloadDirectory.isEmpty && username.utf8.count <= 30 &&
-        (profileDescription?.count ?? 0) <= 4000
+        (profileDescription?.count ?? 0) <= 4000 && (sharingRequiredMessage?.utf8.count ?? 0) <= 1000
     }
     public var serverEndpoint: String { "\(server):\(port)" }
     public var isLocalServer: Bool { ["localhost", "127.0.0.1", "::1"].contains(server.lowercased()) }
