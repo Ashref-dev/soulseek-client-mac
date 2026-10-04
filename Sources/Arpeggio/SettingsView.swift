@@ -304,6 +304,11 @@ private struct TransferSettings: View {
             }
             Section {
                 Stepper("Upload slots: \(model.settings.uploadSlots)", value: $model.settings.uploadSlots, in: 1...20)
+                Toggle("Require sharing to download from me", isOn: Binding(get: { model.settings.requiresSharing }, set: { model.settings.requireSharing = $0 }))
+                if model.settings.requiresSharing {
+                    TextField("Automatic message", text: Binding(get: { model.settings.sharingMessage }, set: { model.settings.sharingRequiredMessage = String($0.prefix(250)) }))
+                    Text("Only confirmed zero-share users are declined. Unknown counts are allowed. Messages are sent at most once per user per hour.").font(.caption).foregroundStyle(.secondary)
+                }
                 TextField("Speed limit (KB/s, 0 = unlimited)", value: Binding(get: { model.settings.uploadLimitKB ?? 0 }, set: { model.settings.uploadLimitKB = max(0, $0) }), format: .number)
                 Stepper(model.settings.uploadQueueLimit == 0 ? "Queued files per user: unlimited" : "Queued files per user: \(model.settings.uploadQueueLimit)",
                         value: Binding(get: { model.settings.uploadQueueLimit }, set: { model.settings.queuedUploadsPerUser = $0 }), in: 0...1000, step: 50)
