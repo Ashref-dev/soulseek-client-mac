@@ -102,14 +102,14 @@ struct TrackResultRow: View {
     var body: some View {
         HStack(spacing: 10) {
             ZStack {
-                if result.file.isAudio && (hovering || isCurrent) {
+                if PreviewFormat.classify(result.file.name) != nil && (hovering || isCurrent) {
                     Button(action: listen) {
                         Image(systemName: isCurrent && model.playback.isPlaying ? "pause.circle.fill" : "play.circle.fill")
                             .foregroundStyle(Color.arpeggio)
                             .contentTransition(.symbolEffect(.replace))
                     }
                     .buttonStyle(.plain)
-                    .help(transfer?.status == .completed ? "Play" : "Preview: stream before downloading")
+                    .help("Preview using macOS. Remote files must fetch before they can open.")
                     .accessibilityLabel(transfer?.status == .completed ? "Play \(result.file.name)" : "Preview \(result.file.name)")
                     .transition(.opacity)
                 } else {

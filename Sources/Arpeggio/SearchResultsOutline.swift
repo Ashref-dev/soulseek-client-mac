@@ -42,7 +42,7 @@ struct SearchResultsOutline: View {
             primary(ids)
         }
         .onKeyPress(.space) {
-            guard let track = actions.resolve(selection).tracks.first, track.file.isAudio else { return .ignored }
+            guard let track = actions.resolve(selection).tracks.first, PreviewFormat.classify(track.file.name) != nil else { return .ignored }
             Task { await model.listen(to: track) }
             return .handled
         }
@@ -144,9 +144,9 @@ private struct SearchResultMenu: View {
         let folders = actions.folders(for: ids)
         let users = Array(Set(selected.users + folders.map(\.user) + selected.tracks.map(\.user))).sorted()
         let online = model.connection.isConnected
-        if selected.tracks.count == 1, let track = selected.tracks.first, track.file.isAudio {
+        if selected.tracks.count == 1, let track = selected.tracks.first, PreviewFormat.classify(track.file.name) != nil {
             let finished = model.downloadState(user: track.user, path: track.file.path)?.status == .completed
-            Button(finished ? "Play" : "Preview (Stream Before Downloading)", systemImage: finished ? "play.fill" : "play.circle") {
+            Button("Preview", systemImage: "play.circle") {
                 Task { await model.listen(to: track) }
             }
             .disabled(!finished && !online)
