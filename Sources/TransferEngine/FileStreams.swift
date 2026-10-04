@@ -112,7 +112,13 @@ extension TransferEngine {
         if let destination { transfers[index].destination = destination }
         transfers[index].status = .completed; transfers[index].transferred = bytes; transfers[index].speed = 0
         recordMoved(index, bytes: bytes); attemptBase.removeValue(forKey: id)
+        let downloadFinished = !transfers[index].upload
         attempts.removeValue(forKey: id); tasks.removeValue(forKey: id); await save(transfers[index]); publish()
+        if downloadFinished {
+            for waiting in transfers.indices where remoteQueued.contains(transfers[waiting].id) && transfers[waiting].token == nil && transfers[waiting].status == .negotiating {
+                remoteQueued.remove(transfers[waiting].id); transfers[waiting].status = .queued
+            }
+        }
     }
     func throttle(bytes: UInt64, since start: ContinuousClock.Instant, upload: Bool) async throws {
         let limit = upload ? uploadLimit : downloadLimit
