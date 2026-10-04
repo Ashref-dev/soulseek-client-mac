@@ -43,7 +43,7 @@ struct OnboardingView: View {
 
     private var welcome: some View {
         VStack(spacing: 22) {
-            hero(symbol: "music.quarternote.3", title: "Welcome to Arpeggio",
+            hero(symbol: nil, title: "Welcome to Arpeggio",
                  text: "A Mac app for Soulseek, the long-running peer-to-peer network where music lovers share their libraries with each other. No servers hold the music: you download straight from other people, and they download from you.")
             VStack(alignment: .leading, spacing: 14) {
                 feature("magnifyingglass", "Search everyone at once", "Results stream in from people sharing right now, grouped by person and album.")
@@ -194,13 +194,19 @@ struct OnboardingView: View {
         navigator.focusSearch()
     }
 
-    private func hero(symbol: String, title: String, text: String) -> some View {
+    private func hero(symbol: String?, title: String, text: String) -> some View {
         VStack(spacing: 10) {
-            Image(systemName: symbol)
-                .font(.system(size: 44, weight: .light))
-                .foregroundStyle(Color.arpeggio)
-                .symbolEffect(.bounce, options: .nonRepeating, value: step)
-                .frame(height: 54)
+            Group {
+                if let symbol {
+                    Image(systemName: symbol)
+                        .font(.system(size: 44, weight: .light))
+                        .symbolEffect(.bounce, options: .nonRepeating, value: step)
+                } else {
+                    ArpeggioLogo().frame(width: 58, height: 58)
+                }
+            }
+            .foregroundStyle(Color.arpeggio)
+            .frame(height: 60)
             Text(title).font(.title.weight(.semibold))
             Text(text)
                 .font(.body)

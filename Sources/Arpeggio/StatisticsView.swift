@@ -92,7 +92,7 @@ struct StatsCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             HStack(spacing: 10) {
-                BarsMark().frame(width: 26, height: 22)
+                ArpeggioLogo().frame(width: 30, height: 30)
                 VStack(alignment: .leading, spacing: 0) {
                     Text(user).font(.title3.weight(.semibold))
                     Text("on Soulseek since \(stats.since.formatted(.dateTime.month(.wide).year()))").font(.caption).opacity(0.75)
@@ -135,20 +135,6 @@ struct StatsCard: View {
         VStack(alignment: .leading, spacing: 0) {
             Text(value).font(.headline).monospacedDigit()
             Text(label).font(.caption).opacity(0.7)
-        }
-    }
-}
-
-struct BarsMark: View {
-    var body: some View {
-        GeometryReader { proxy in
-            let width = proxy.size.width / 4.4
-            HStack(alignment: .bottom, spacing: width * 0.7) {
-                ForEach([0.45, 0.72, 1.0], id: \.self) { height in
-                    Capsule().frame(width: width, height: proxy.size.height * height)
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
         }
     }
 }

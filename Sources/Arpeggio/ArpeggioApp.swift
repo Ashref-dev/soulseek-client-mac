@@ -41,7 +41,7 @@ struct ArpeggioApp: App {
                     .task { delegate.model = model }
             }
         } label: {
-            if let model { MenuBarLabel(model: model, bootstrap: bootstrap) } else { Image(systemName: "music.quarternote.3") }
+            if let model { MenuBarLabel(model: model, bootstrap: bootstrap) } else { Image(nsImage: MenuBarGlyph.image(presence: .offline, uploading: false)) }
         }
         .menuBarExtraStyle(.window)
 

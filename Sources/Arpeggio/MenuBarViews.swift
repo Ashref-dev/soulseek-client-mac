@@ -2,49 +2,56 @@ import SwiftUI
 import AppKit
 import ArpeggioServices
 
-/// The Arpeggio mark: three beamed notes rising. Dimmed when offline, with a moon when away
-/// and an arrow while someone is downloading from you.
+/// The Arpeggio mark as a menu bar template. Dimmed when offline, with a moon when away and an arrow
+/// while someone is downloading from you.
 enum MenuBarGlyph {
     static func image(presence: Presence, uploading: Bool) -> NSImage {
-        let image = NSImage(size: NSSize(width: 22, height: 16), flipped: false) { _ in
-            let context = NSGraphicsContext.current!.cgContext
-            context.setAlpha(presence == .offline ? 0.38 : 1)
-            context.beginTransparencyLayer(auxiliaryInfo: nil)
-            NSColor.black.setFill()
-            func beamTop(_ x: CGFloat) -> CGFloat { 10.9 + (x - 5.0) * 0.36 }
-            for center in [NSPoint(x: 3.3, y: 3.0), NSPoint(x: 9.5, y: 4.9), NSPoint(x: 15.7, y: 6.8)] {
-                let head = NSBezierPath(ovalIn: NSRect(x: -2.75, y: -2.0, width: 5.5, height: 4.0))
-                var transform = AffineTransform(rotationByDegrees: 20)
-                transform.append(AffineTransform(translationByX: center.x, byY: center.y))
-                head.transform(using: transform)
-                head.fill()
-                let stemX = center.x + 1.25
-                NSBezierPath(rect: NSRect(x: stemX, y: center.y, width: 1.4, height: beamTop(stemX + 1.4) - center.y)).fill()
-            }
-            let beam = NSBezierPath()
-            beam.move(to: NSPoint(x: 4.55, y: beamTop(4.55))); beam.line(to: NSPoint(x: 18.35, y: beamTop(18.35)))
-            beam.line(to: NSPoint(x: 18.35, y: beamTop(18.35) - 2.1)); beam.line(to: NSPoint(x: 4.55, y: beamTop(4.55) - 2.1)); beam.close()
-            beam.fill()
-            context.endTransparencyLayer()
-            context.setAlpha(1)
-            let badge = NSRect(x: 16.4, y: 0.4, width: 5.6, height: 5.6)
+        let image = NSImage(size: NSSize(width: 25, height: 18), flipped: true) { _ in
+            guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
+            var transform = ArpeggioMark.transform(into: CGRect(x: 0, y: 0.5, width: 18, height: 17), fit: true)
+            ctx.addPath(ArpeggioMark.combined.copy(using: &transform)!)
+            ctx.setFillColor(NSColor.black.withAlphaComponent(presence == .offline ? 0.4 : 1).cgColor)
+            ctx.fillPath(using: .evenOdd)
+            let badge = CGRect(x: 19, y: 11.5, width: 6, height: 6)
+            ctx.setFillColor(NSColor.black.cgColor)
             if uploading, presence != .offline {
-                let arrow = NSBezierPath()
-                arrow.move(to: NSPoint(x: badge.midX, y: badge.maxY)); arrow.line(to: NSPoint(x: badge.maxX, y: badge.midY + 0.2))
-                arrow.line(to: NSPoint(x: badge.midX + 0.8, y: badge.midY + 0.2)); arrow.line(to: NSPoint(x: badge.midX + 0.8, y: badge.minY))
-                arrow.line(to: NSPoint(x: badge.midX - 0.8, y: badge.minY)); arrow.line(to: NSPoint(x: badge.midX - 0.8, y: badge.midY + 0.2))
-                arrow.line(to: NSPoint(x: badge.minX, y: badge.midY + 0.2)); arrow.close()
-                NSColor.black.setFill(); arrow.fill()
+                let arrow = CGMutablePath()
+                arrow.move(to: CGPoint(x: badge.midX, y: badge.minY))
+                arrow.addLine(to: CGPoint(x: badge.maxX, y: badge.midY))
+                arrow.addLine(to: CGPoint(x: badge.midX + 0.9, y: badge.midY))
+                arrow.addLine(to: CGPoint(x: badge.midX + 0.9, y: badge.maxY))
+                arrow.addLine(to: CGPoint(x: badge.midX - 0.9, y: badge.maxY))
+                arrow.addLine(to: CGPoint(x: badge.midX - 0.9, y: badge.midY))
+                arrow.addLine(to: CGPoint(x: badge.minX, y: badge.midY))
+                arrow.closeSubpath()
+                ctx.addPath(arrow); ctx.fillPath()
             } else if presence == .away {
-                NSColor.black.setFill(); NSBezierPath(ovalIn: badge).fill()
-                NSGraphicsContext.current?.compositingOperation = .destinationOut
-                NSBezierPath(ovalIn: badge.offsetBy(dx: 2.1, dy: 1.6)).fill()
-                NSGraphicsContext.current?.compositingOperation = .sourceOver
+                ctx.addEllipse(in: badge); ctx.fillPath()
+                ctx.setBlendMode(.clear)
+                ctx.addEllipse(in: badge.offsetBy(dx: 2.2, dy: -1.6)); ctx.fillPath()
+                ctx.setBlendMode(.normal)
             }
             return true
         }
         image.isTemplate = true
         return image
+    }
+}
+
+/// The Arpeggio mark as a SwiftUI view, coloured by the foreground style.
+struct ArpeggioLogo: View {
+    var body: some View {
+        ArpeggioMarkShape()
+            .fill(style: FillStyle(eoFill: true))
+            .aspectRatio(1, contentMode: .fit)
+            .accessibilityHidden(true)
+    }
+}
+
+struct ArpeggioMarkShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        var transform = ArpeggioMark.transform(into: rect, fit: true)
+        return Path(ArpeggioMark.combined.copy(using: &transform)!)
     }
 }
 

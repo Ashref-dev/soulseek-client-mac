@@ -64,8 +64,8 @@ struct LoginSheet: View {
 
     private var header: some View {
         VStack(spacing: 6) {
-            Image(systemName: "music.quarternote.3")
-                .font(.system(size: 30, weight: .light))
+            ArpeggioLogo()
+                .frame(width: 40, height: 40)
                 .foregroundStyle(Color.arpeggio)
             Text(model.connection.isConnected ? "Connected to \(model.settings.isSoulseekServer ? "Soulseek" : model.settings.targetDescription)" : "Sign In to Soulseek")
                 .font(.title3.weight(.semibold))

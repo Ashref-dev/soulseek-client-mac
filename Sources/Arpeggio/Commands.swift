@@ -12,7 +12,7 @@ struct ArpeggioCommands: Commands {
         CommandGroup(replacing: .appInfo) {
             Button("About Arpeggio") {
                 NSApp.orderFrontStandardAboutPanel(options: [
-                    .applicationName: "Arpeggio",
+                    .applicationName: "Soulseek-Arpeggio",
                     .credits: NSAttributedString(string: "A native Soulseek client for macOS.\nNot affiliated with Soulseek."),
                 ])
             }
@@ -80,8 +80,11 @@ struct HelpView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                Label("Arpeggio", systemImage: "music.quarternote.3").font(.largeTitle.weight(.semibold))
-                    .foregroundStyle(Color.arpeggio)
+                HStack(spacing: 12) {
+                    ArpeggioLogo().frame(width: 40, height: 40)
+                    Text("Soulseek-Arpeggio").font(.largeTitle.weight(.semibold))
+                }
+                .foregroundStyle(Color.arpeggio)
                 topic("Connecting", "Sign in once with Network › Connect. With Remember password on, Arpeggio connects automatically every time it opens until you choose Network › Sign Out, which forgets the saved password. Disconnect only goes offline for now. Arpeggio uses server.slsknet.org:2242 unless you change it in Settings › Advanced. The legacy protocol sends passwords without encryption, so use a password unique to Soulseek.")
                 topic("New Accounts", "Soulseek has no separate sign-up. Signing in with an unused username (up to 30 ASCII characters) registers it with that password. Availability can’t be checked in advance: if the name is already taken, the server reports a wrong password.")
                 topic("Local Test Server", "A server on localhost or 127.0.0.1 is a developer fixture, not the Soulseek network. Choose Use Soulseek Server in the sign-in sheet, or Restore Default Server in Settings › Advanced, to switch back.")
