@@ -12,6 +12,9 @@ public actor TransferEngine {
     var sockets: [String: TCPConnection] = [:]
     var uploadSources: [String: URL] = [:]
     var downloadRoot: URL
+    var layout = DownloadLayout()
+    var uploadQueueLimit = 200
+    var previewRoot = FileManager.default.temporaryDirectory.appendingPathComponent("ArpeggioPreviews", isDirectory: true)
     var downloadSlots = 3
     var uploadSlots = 2
     var downloadLimit: Double = 0
@@ -21,6 +24,7 @@ public actor TransferEngine {
     var retryTasks: [String: Task<Void, Never>] = [:]
     var uploadBlockedUntil: [String: Date] = [:]
     var attempts: [String: UUID] = [:]
+    var attemptBase: [String: (moved: UInt64, offset: UInt64)] = [:]
     var closing: Set<String> = []
     var negotiationTasks: [String: Task<Void, Never>] = [:]
     var uploadAuthorizer: (@Sendable (String, SharedFile, URL) async -> Bool)?
@@ -31,14 +35,18 @@ public actor TransferEngine {
     }
     public func restore() async throws {
         transfers = try await database.all(Transfer.self, collection: "transfers")
+        for item in transfers where item.isPreview { await removePreviewFiles(item); try? await database.remove(collection: "transfers", id: item.id) }
+        transfers.removeAll(where: \.isPreview)
         for index in transfers.indices where [.transferring, .negotiating, .queued].contains(transfers[index].status) {
             transfers[index].status = transfers[index].upload ? .failed : .queued
             transfers[index].speed = 0; transfers[index].token = nil
         }
         publish()
     }
-    public func configure(root: URL, downloads: Int, uploads: Int, downloadLimitKB: Int = 0, uploadLimitKB: Int = 0) {
+    public func configure(root: URL, downloads: Int, uploads: Int, downloadLimitKB: Int = 0, uploadLimitKB: Int = 0,
+                          layout: DownloadLayout = DownloadLayout(), uploadQueueLimit: Int = 200) {
         downloadRoot = root; downloadSlots = max(1, min(20, downloads)); uploadSlots = max(1, min(20, uploads))
+        self.layout = layout; self.uploadQueueLimit = max(0, uploadQueueLimit)
         downloadLimit = Double(max(0, min(1_000_000, downloadLimitKB))) * 1024
         uploadLimit = Double(max(0, min(1_000_000, uploadLimitKB))) * 1024
     }
@@ -77,8 +85,11 @@ public actor TransferEngine {
     public func enqueue(_ results: [SearchResult]) async throws {
         for result in results {
             guard result.file.size <= 16 * 1024 * 1024 * 1024 else { throw ProtocolError.oversized }
+            if let preview = transfers.first(where: { $0.isPreview && $0.user == result.user && $0.file.path == result.file.path && $0.status != .cancelled }) {
+                try await keep(preview.id); continue
+            }
             if transfers.contains(where: { !$0.upload && $0.user == result.user && $0.file.path == result.file.path && (![.cancelled, .completed].contains($0.status) || closing.contains($0.id)) }) { continue }
-            let (destination, partial) = try SafeDestination.prepare(root: downloadRoot, user: result.user, remotePath: result.file.path)
+            let (destination, partial) = try SafeDestination.plan(root: downloadRoot, user: result.user, remotePath: result.file.path, layout: layout)
             var transfer = Transfer(user: result.user, file: result.file)
             transfer.destination = destination.path; transfer.partial = partial.path
             transfers.append(transfer); try await database.put(transfer, collection: "transfers", id: transfer.id)
@@ -94,13 +105,13 @@ public actor TransferEngine {
         await save(transfers[index]); publish(); await pump()
     }
     public func clearFinished(upload: Bool) async {
-        let removed = transfers.filter { $0.upload == upload && [.completed, .cancelled].contains($0.status) && !closing.contains($0.id) }
+        let removed = transfers.filter { $0.upload == upload && !$0.isPreview && [.completed, .cancelled].contains($0.status) && !closing.contains($0.id) }
         transfers.removeAll { item in removed.contains { $0.id == item.id } }
         for item in removed { try? await database.remove(collection: "transfers", id: item.id) }
         publish()
     }
     public func clearFailed(upload: Bool) async {
-        let removed = transfers.filter { $0.upload == upload && $0.status == .failed && !closing.contains($0.id) }
+        let removed = transfers.filter { $0.upload == upload && !$0.isPreview && $0.status == .failed && !closing.contains($0.id) }
         for item in removed {
             retryTasks.removeValue(forKey: item.id)?.cancel()
             try? await database.remove(collection: "transfers", id: item.id)
@@ -124,8 +135,9 @@ public actor TransferEngine {
     }
     func pump() async {
         guard connected else { return }
-        let active = transfers.filter { !$0.upload && [.negotiating, .transferring].contains($0.status) && !remoteQueued.contains($0.id) }.count
-        let queued = transfers.filter { !$0.upload && $0.status == .queued }.prefix(max(0, downloadSlots - active))
+        let active = transfers.filter { !$0.upload && !$0.isPreview && [.negotiating, .transferring].contains($0.status) && !remoteQueued.contains($0.id) }.count
+        let previews = transfers.filter { !$0.upload && $0.isPreview && $0.status == .queued }
+        let queued = previews + transfers.filter { !$0.upload && !$0.isPreview && $0.status == .queued }.prefix(max(0, downloadSlots - active))
         for transfer in queued {
             guard let index = transfers.firstIndex(where: { $0.id == transfer.id }), transfers[index].status == .queued else { continue }
             transfers[index].status = .negotiating

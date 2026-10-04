@@ -23,8 +23,8 @@ extension TransferEngine {
                 try await session.peerSend(user: user, code: 41, payload: response.data)
                 return
             }
-            let active = transfers.filter { !$0.upload && ($0.status == .transferring || ($0.status == .negotiating && $0.token != nil)) }.count
-            guard active < downloadSlots else {
+            let active = transfers.filter { !$0.upload && !$0.isPreview && ($0.status == .transferring || ($0.status == .negotiating && $0.token != nil)) }.count
+            guard transfers[index].isPreview || active < downloadSlots else {
                 var response = WireWriter(); response.uint(token); response.byte(0); response.string("Queued")
                 try await session.peerSend(user: user, code: 41, payload: response.data); return
             }
@@ -91,13 +91,17 @@ extension TransferEngine {
         default: break
         }
     }
-    public func queueUpload(user: String, file: SharedFile, localURL: URL, start: Bool = true) async {
-        guard transfers.filter({ $0.upload && [.queued, .negotiating, .transferring].contains($0.status) }).count < 1000 else { return }
-        guard !transfers.contains(where: { $0.upload && $0.user == user && $0.file.path == file.path && [.queued, .negotiating, .transferring].contains($0.status) }) else { return }
+    @discardableResult
+    public func queueUpload(user: String, file: SharedFile, localURL: URL, start: Bool = true) async -> Bool {
+        let pending = transfers.filter { $0.upload && [.queued, .negotiating, .transferring].contains($0.status) }
+        guard pending.count < 1000 else { return false }
+        guard !pending.contains(where: { $0.user == user && $0.file.path == file.path }) else { return true }
+        if uploadQueueLimit > 0, pending.filter({ $0.user == user && $0.status == .queued }).count >= uploadQueueLimit { return false }
         let item = Transfer(user: user, file: file, upload: true)
         transfers.append(item); uploadSources[item.id] = localURL
         await save(item); publish()
         if start { await pumpUploads() }
+        return true
     }
     public func startQueuedUploads() async { await pumpUploads() }
     func pumpUploads() async {

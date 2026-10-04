@@ -12,8 +12,7 @@ extension TransferEngine {
         guard let item = transfers.first(where: { $0.id == id }), let partialPath = item.partial, let destinationPath = item.destination else { throw FileSafetyError.unsafePath }
         let partial = URL(fileURLWithPath: partialPath)
         let destination = URL(fileURLWithPath: destinationPath)
-        guard partial.resolvingSymlinksInPath().path == partial.path,
-              destination.deletingLastPathComponent().resolvingSymlinksInPath() == destination.deletingLastPathComponent() else { throw FileSafetyError.symbolicLink }
+        guard partial.resolvingSymlinksInPath().path == partial.path else { throw FileSafetyError.symbolicLink }
         if !FileManager.default.fileExists(atPath: partial.path) {
             guard FileManager.default.createFile(atPath: partial.path, contents: nil) else { throw ProtocolError.invalid("Could not create the partial download file.") }
         }
@@ -22,6 +21,7 @@ extension TransferEngine {
         let offset = try handle.seekToEnd()
         guard offset <= item.file.size else { throw FileSafetyError.sizeMismatch }
         sockets[id] = connection.socket
+        startAttempt(id, offset: offset)
         var header = WireWriter(); header.ulong(offset)
         try await connection.socket.send(header.data)
         var received = offset
@@ -45,8 +45,9 @@ extension TransferEngine {
             }
         }
         try requireAttempt(id, attempt: attempt); try handle.synchronize()
-        try FileManager.default.moveItem(at: partial, to: destination)
-        await complete(id, bytes: received, attempt: attempt)
+        let target = transfers.first(where: { $0.id == id })?.destination.map { URL(fileURLWithPath: $0) } ?? destination
+        let published = try SafeDestination.publish(partial, to: target)
+        await complete(id, bytes: received, attempt: attempt, destination: published.path)
     }
     func upload(_ id: String, connection: FramedConnection, attempt: UUID) async throws {
         defer {
@@ -65,6 +66,7 @@ extension TransferEngine {
         var reader = WireReader(try await connection.exact(8, timeout: 30)); let offset = try reader.ulong()
         try requireAttempt(id, attempt: attempt)
         guard offset <= item.file.size else { throw FileSafetyError.sizeMismatch }
+        startAttempt(id, offset: offset)
         try handle.seek(toOffset: offset)
         var sent = offset
         let started = ContinuousClock.now
@@ -94,11 +96,22 @@ extension TransferEngine {
     func progress(_ id: String, bytes: UInt64, speed: Double, attempt: UUID) async {
         guard attempts[id] == attempt, let index = transfers.firstIndex(where: { $0.id == id }), ![.paused, .cancelled].contains(transfers[index].status) else { return }
         transfers[index].status = .transferring; transfers[index].transferred = bytes; transfers[index].speed = speed
+        recordMoved(index, bytes: bytes)
         publish()
     }
-    func complete(_ id: String, bytes: UInt64, attempt: UUID) async {
+    func startAttempt(_ id: String, offset: UInt64) {
+        let moved = transfers.first(where: { $0.id == id })?.bytesMoved ?? 0
+        attemptBase[id] = (moved, offset)
+    }
+    func recordMoved(_ index: Int, bytes: UInt64) {
+        guard let base = attemptBase[transfers[index].id], bytes >= base.offset else { return }
+        transfers[index].bytesMoved = base.moved + (bytes - base.offset)
+    }
+    func complete(_ id: String, bytes: UInt64, attempt: UUID, destination: String? = nil) async {
         guard attempts[id] == attempt, let index = transfers.firstIndex(where: { $0.id == id }), transfers[index].status == .transferring else { return }
+        if let destination { transfers[index].destination = destination }
         transfers[index].status = .completed; transfers[index].transferred = bytes; transfers[index].speed = 0
+        recordMoved(index, bytes: bytes); attemptBase.removeValue(forKey: id)
         attempts.removeValue(forKey: id); tasks.removeValue(forKey: id); await save(transfers[index]); publish()
     }
     func throttle(bytes: UInt64, since start: ContinuousClock.Instant, upload: Bool) async throws {

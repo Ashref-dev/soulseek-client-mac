@@ -3,7 +3,7 @@ import Testing
 import SoulseekCore
 import Persistence
 import ShareIndexer
-import TransferEngine
+@testable import TransferEngine
 
 @Test func indexingCanonicalPathsPrivacyAndSymlinks() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -30,11 +30,16 @@ import TransferEngine
 @Test func duplicatesAndPartialNamesAreStable() throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).resolvingSymlinksInPath()
     defer { try? FileManager.default.removeItem(at: root) }
-    let (destination, partial) = try SafeDestination.prepare(root: root, user: "listener", remotePath: "Björk\\日本語.txt")
-    try Data("completed".utf8).write(to: destination)
-    try Data("partial".utf8).write(to: partial)
-    let (duplicate, samePartial) = try SafeDestination.prepare(root: root, user: "listener", remotePath: "Björk\\日本語.txt")
-    #expect(duplicate != destination); #expect(samePartial == partial)
+    let (destination, partial) = try SafeDestination.plan(root: root, user: "listener", remotePath: "Björk\\日本語.txt")
+    #expect(!FileManager.default.fileExists(atPath: destination.deletingLastPathComponent().path))
+    try Data("completed".utf8).write(to: partial)
+    let first = try SafeDestination.publish(partial, to: destination)
+    #expect(first == destination)
+    let (duplicate, samePartial) = try SafeDestination.plan(root: root, user: "listener", remotePath: "Björk\\日本語.txt")
+    #expect(samePartial == partial); #expect(duplicate == destination)
+    try Data("again".utf8).write(to: samePartial)
+    let second = try SafeDestination.publish(samePartial, to: duplicate)
+    #expect(second.lastPathComponent == "日本語 (2).txt")
     #expect(try Data(contentsOf: destination) == Data("completed".utf8))
 }
 
@@ -42,8 +47,21 @@ import TransferEngine
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).resolvingSymlinksInPath()
     defer { try? FileManager.default.removeItem(at: root) }
     try FileManager.default.createDirectory(at: root.appendingPathComponent("outside"), withIntermediateDirectories: true)
-    try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("listener"), withDestinationURL: root.appendingPathComponent("outside"))
-    #expect(throws: FileSafetyError.self) { try SafeDestination.prepare(root: root, user: "listener", remotePath: "file.txt") }
+    try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("Album"), withDestinationURL: root.appendingPathComponent("outside"))
+    let (destination, partial) = try SafeDestination.plan(root: root, user: "listener", remotePath: "Music\\Album\\file.txt")
+    try Data("x".utf8).write(to: partial)
+    #expect(throws: FileSafetyError.self) { try SafeDestination.publish(partial, to: destination) }
+    #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("outside/file.txt").path))
+}
+
+@Test func downloadsKeepOnlyTheAlbumFolderByDefault() throws {
+    let path = "Music\\Lossless\\Capcom\\Monster Hunter Rise OST\\Disc 2\\01 Song.flac"
+    #expect(try SafeDestination.relativeComponents(user: "peer", remotePath: path, layout: DownloadLayout()) == ["Monster Hunter Rise OST", "Disc 2", "01 Song.flac"])
+    #expect(try SafeDestination.relativeComponents(user: "peer", remotePath: "Music\\Album\\01.mp3", layout: DownloadLayout()) == ["Album", "01.mp3"])
+    #expect(try SafeDestination.relativeComponents(user: "peer", remotePath: "loose.mp3", layout: DownloadLayout()) == ["loose.mp3"])
+    #expect(try SafeDestination.relativeComponents(user: "peer", remotePath: "Music\\Album\\01.mp3", layout: DownloadLayout(userFolders: true)) == ["peer", "Album", "01.mp3"])
+    #expect(try SafeDestination.relativeComponents(user: "peer", remotePath: path, layout: DownloadLayout(fullPaths: true)).count == 6)
+    #expect(SafeDestination.isDiscFolder("CD1")); #expect(SafeDestination.isDiscFolder("disc 03 - bonus")); #expect(!SafeDestination.isDiscFolder("Discovery"))
 }
 
 @Test func interruptedStateRestoresAsQueueAndPausedStaysPaused() async throws {
