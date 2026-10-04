@@ -26,6 +26,7 @@ public final class AppModel {
     public var browseLoading = false
     public var sharedLibrary: [String: [SharedFile]] = [:]
     public var indexing = false
+    public var shareProgress = ShareScanProgress()
     public var downloadsSuspended = false
     public var uploadsSuspended = false
     public var portCheck: String?
@@ -102,6 +103,7 @@ public final class AppModel {
     @ObservationIgnored var activeSessionGeneration: UInt64?
     @ObservationIgnored var shareWatcher: ShareWatcher?
     @ObservationIgnored var shareChangeTask: Task<Void, Never>?
+    @ObservationIgnored var shareProgressTask: Task<Void, Never>?
     @ObservationIgnored let sharingPolicy = SharingPolicy()
     @ObservationIgnored var uploadRequestTasks: [UUID: Task<Void, Never>] = [:]
     @ObservationIgnored var uploadRequestUsers: [UUID: String] = [:]
@@ -164,6 +166,12 @@ public final class AppModel {
                 }
             }
         }
+        shareProgressTask = Task { [weak self, shareIndex] in
+            for await progress in shareIndex.progress {
+                guard let self, !Task.isCancelled else { return }
+                if progress.revision >= self.shareProgress.revision { self.shareProgress = progress }
+            }
+        }
         await rescanShares()
         scheduleUpdateChecks()
         await transferEngine.setUploadAuthorizer { [weak self] user, file, url in
@@ -204,6 +212,7 @@ public final class AppModel {
         intentionallyOffline = true; loginRevision &+= 1
         reconnectTask?.cancel(); reconnectTask = nil; wishlistTask?.cancel(); wishlistTask = nil
         batchTask?.cancel(); searchStopTask?.cancel(); shareWatchTask?.cancel(); shareScanTask?.cancel()
+        shareProgressTask?.cancel()
         for task in uploadRequestTasks.values { task.cancel() }
         uploadRequestTasks.removeAll(); uploadRequestUsers.removeAll()
         idleTask?.cancel(); statisticsTask?.cancel(); updateTask?.cancel(); receivedFlushTask?.cancel()

@@ -17,21 +17,43 @@ public struct ShareRootSummary: Sendable, Equatable {
     public var folders = 0
 }
 
+public struct ShareScanProgress: Sendable, Equatable {
+    public enum Phase: String, Sendable { case idle, scanning, completed, cancelled }
+    public var revision: UInt64 = 0
+    public var phase: Phase = .idle
+    public var folder: String?
+    public var filesProcessed = 0
+    public init() {}
+    public var description: String {
+        let location = folder.map { " · \($0)" } ?? ""
+        return "\(phase == .scanning ? "Indexing" : phase.rawValue.capitalized) · \(filesProcessed.formatted()) files processed\(location)"
+    }
+}
+
 public actor ShareIndex {
+    public nonisolated let progress: AsyncStream<ShareScanProgress>
+    private let progressContinuation: AsyncStream<ShareScanProgress>.Continuation
     private var files: [String: IndexedFile] = [:]
     private var scanRevision: UInt64 = 0
     public private(set) var errors: [String] = []
     public private(set) var summaries: [String: ShareRootSummary] = [:]
-    public init() {}
+    public init() {
+        let pair = AsyncStream<ShareScanProgress>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        progress = pair.stream; progressContinuation = pair.continuation
+    }
     public func scan(folders: [(URL, Bool)], exclusions: [String] = []) async -> (Int, UInt64) {
         scanRevision &+= 1; let revision = scanRevision
         var next: [String: IndexedFile] = [:]
-        errors = []
+        var errors: [String] = []
+        var status = ShareScanProgress(); status.revision = revision; status.phase = .scanning
+        progressContinuation.yield(status)
+        var lastUpdate = ContinuousClock.now
         var total: UInt64 = 0
         var processed = 0
         var summaries: [String: ShareRootSummary] = [:]
         let manager = FileManager.default
         for (root, privateShare) in folders {
+            status.folder = root.path; progressContinuation.yield(status)
             var summary = ShareRootSummary()
             var folderNames = Set<String>()
             defer { summary.folders = folderNames.count; summaries[root.path] = summary }
@@ -45,7 +67,10 @@ public actor ShareIndex {
                 processed += 1
                 if processed % 128 == 0 { await Task.yield() }
                 guard revision == scanRevision else { return (files.count, files.values.reduce(0) { $0 + $1.file.size }) }
-                if Task.isCancelled { return (files.count, files.values.reduce(0) { $0 + $1.file.size }) }
+                if Task.isCancelled {
+                    status.phase = .cancelled; progressContinuation.yield(status)
+                    return (files.count, files.values.reduce(0) { $0 + $1.file.size })
+                }
                 do {
                     if exclusions.contains(where: { fnmatch($0, url.lastPathComponent, FNM_CASEFOLD) == 0 }) {
                         enumerator.skipDescendants(); continue
@@ -53,6 +78,11 @@ public actor ShareIndex {
                     let values = try url.resourceValues(forKeys: Set(keys))
                     if values.isSymbolicLink == true { enumerator.skipDescendants(); continue }
                     guard values.isRegularFile == true, values.isReadable == true else { continue }
+                    status.filesProcessed += 1
+                    if ContinuousClock.now - lastUpdate >= .milliseconds(100) {
+                        status.folder = url.deletingLastPathComponent().path
+                        progressContinuation.yield(status); lastUpdate = .now
+                    }
                     let canonical = url.resolvingSymlinksInPath().standardizedFileURL
                     guard canonical.path.hasPrefix(resolved.path + "/") else { continue }
                     let relative = String(canonical.path.dropFirst(resolved.path.count + 1)).replacingOccurrences(of: "/", with: "\\")
@@ -72,8 +102,13 @@ public actor ShareIndex {
                 } catch { errors.append("\(url.lastPathComponent): \(error.localizedDescription)") }
             }
         }
-        files = next
+        guard revision == scanRevision, !Task.isCancelled else {
+            if revision == scanRevision { status.phase = .cancelled; progressContinuation.yield(status) }
+            return (files.count, files.values.reduce(0) { $0 + $1.file.size })
+        }
+        files = next; self.errors = errors
         self.summaries = summaries
+        status.phase = .completed; progressContinuation.yield(status)
         return (files.count, total)
     }
     public func library(allowPrivate: Bool = false, configuredFolders: [(URL, Bool)]? = nil) -> [String: [SharedFile]] {
