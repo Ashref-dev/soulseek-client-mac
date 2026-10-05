@@ -121,6 +121,10 @@ extension FocusedValues {
 
 extension Color {
     static let arpeggio = Color(red: 0.53, green: 0.45, blue: 0.88)
+    /// The statistics card's fixed brand palette, the same in light and dark appearance.
+    static let arpeggioDeep = Color(red: 0.36, green: 0.27, blue: 0.78)
+    static let arpeggioNight = Color(red: 0.10, green: 0.08, blue: 0.27)
+    static let arpeggioLavender = Color(red: 0.62, green: 0.52, blue: 1)
 }
 
 extension ConnectionState {

@@ -17,6 +17,6 @@ let package = Package(
         .target(name: "ProtocolFixtures", dependencies: ["SoulseekCore"]),
         .executableTarget(name: "ArpeggioFixture", dependencies: ["ArpeggioServices", "ProtocolFixtures"], path: "Tools/Fixture"),
         .executableTarget(name: "ArpeggioLive", dependencies: ["ArpeggioServices"], path: "Tools/Live"),
-        .testTarget(name: "CoreTests", dependencies: ["SoulseekCore", "Persistence", "ShareIndexer", "TransferEngine", "ArpeggioServices", "ProtocolFixtures"])
+        .testTarget(name: "CoreTests", dependencies: ["SoulseekCore", "Persistence", "ShareIndexer", "TransferEngine", "ArpeggioServices", "ProtocolFixtures", "Arpeggio"])
     ]
 )
