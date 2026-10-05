@@ -98,6 +98,7 @@ public final class AppModel {
         try await Task.detached(priority: .utility) { try Keychain.password(for: username) ?? "" }.value
     }
     @ObservationIgnored var shuttingDown = false
+    @ObservationIgnored var startupConnectionAttempted = false
     @ObservationIgnored var rescanPending = false
     @ObservationIgnored var shareScanTask: Task<(Int, UInt64), Never>?
     @ObservationIgnored var initialShareTask: Task<Void, Never>?
@@ -284,12 +285,23 @@ public final class AppModel {
         catch { self.error = error.localizedDescription; return "" }
     }
     public func connectAtLaunch() async {
-        guard settings.connectsAutomatically, !settings.username.isEmpty, connection == .offline, !shuttingDown else { return }
-        let account = (settings.username, settings.server, settings.port, loginRevision)
-        let password = await savedPassword()
-        guard !password.isEmpty, connection == .offline, !shuttingDown, settings.connectsAutomatically,
-              account == (settings.username, settings.server, settings.port, loginRevision) else { return }
-        await login(password: password, remember: false)
+        guard !startupConnectionAttempted, !Task.isCancelled, settings.connectsAutomatically,
+              !settings.username.isEmpty, connection == .offline, !shuttingDown else { return }
+        startupConnectionAttempted = true
+        let account = (settings.username, settings.server, settings.port, settings.listeningPort, loginRevision)
+        let result: Result<String, any Error>
+        do { result = .success(try await credentialLookup(account.0)) }
+        catch { result = .failure(error) }
+        guard !Task.isCancelled, connection == .offline, !shuttingDown, settings.connectsAutomatically,
+              account == (settings.username, settings.server, settings.port, settings.listeningPort, loginRevision) else { return }
+        switch result {
+        case .success(let password) where !password.isEmpty:
+            await login(password: password, remember: false)
+        case .success:
+            error = "Automatic sign-in needs a saved password. Open Account and Server and Sign In with Remember password enabled. Your downloads and settings are still saved."
+        case .failure(let failure):
+            error = "Automatic sign-in stopped. \(failure.localizedDescription)"
+        }
     }
     public func signOut() async {
         let user = settings.username
