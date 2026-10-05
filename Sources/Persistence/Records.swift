@@ -36,6 +36,7 @@ public struct AppSettings: Codable, Sendable {
     public var sharingRequiredMessage: String?
     public var natPMPEnabled: Bool?
     public var upnpEnabled: Bool?
+    public var statsCardAccount: Bool?
     public init() {}
     public var connectsAutomatically: Bool { autoConnect ?? true }
     public var downloadLayout: DownloadLayout { DownloadLayout(userFolders: userFolders ?? false, fullPaths: fullRemotePaths ?? false) }
@@ -50,6 +51,8 @@ public struct AppSettings: Codable, Sendable {
     public var showsMenuBarIcon: Bool { menuBarIcon ?? true }
     public var uploadQueueLimit: Int { max(0, queuedUploadsPerUser ?? 200) }
     public var checksForUpdates: Bool { checkForUpdates ?? true }
+    /// Shared statistics pictures and summaries leave the username out unless the person opts in.
+    public var showsAccountOnStatsCard: Bool { statsCardAccount ?? false }
     /// Seconds without new results before a search ends; 0 keeps it open until stopped.
     public var searchAutoStopSeconds: Int { max(0, searchIdleSeconds ?? 15) }
     /// Bounds every field that becomes a number on the wire or a loop count, for settings read from files.
