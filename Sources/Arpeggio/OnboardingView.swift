@@ -16,17 +16,22 @@ struct OnboardingView: View {
     var body: some View {
         VStack(spacing: 0) {
             ZStack {
-                page(step)
-                    .id(step)
-                    .transition(reduceMotion ? .opacity : .asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity),
-                                                                    removal: .move(edge: .leading).combined(with: .opacity)))
+                GeometryReader { proxy in
+                    ScrollView {
+                        page(step).frame(maxWidth: .infinity, minHeight: proxy.size.height)
+                    }
+                    .scrollBounceBehavior(.basedOnSize)
+                }
+                .id(step)
+                .transition(reduceMotion ? .opacity : .asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity),
+                                                                removal: .move(edge: .leading).combined(with: .opacity)))
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .clipped()
             Divider()
             footer.padding(16)
         }
-        .frame(width: 640, height: 540)
+        .frame(width: 640, height: 640)
         .tint(.arpeggio)
         .sheet(isPresented: $showLogin) { LoginSheet(model: model) }
         .interactiveDismissDisabled()
@@ -85,48 +90,90 @@ struct OnboardingView: View {
         VStack(spacing: 18) {
             hero(symbol: "externaldrive.badge.person.crop", title: "Share your music",
                  text: "Pick the folders other people can browse and download from. Only what you choose is shared. Hidden files and symbolic links never are.")
-            VStack(spacing: 8) {
-                if let music = AppModel.musicFolder, !model.settings.sharedFolders.contains(where: { $0.path == music.standardizedFileURL.path }) {
-                    Button { Task { await model.share([music]) } } label: {
-                        Label("Share My Music Folder", systemImage: "music.note.house").padding(.horizontal, 8)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
-                }
-                Button("Choose Folders…") {
-                    let urls = FolderPicker.choose(prompt: "Share", multiple: true)
-                    Task { await model.share(urls) }
-                }
+            shareChoices
+            if !model.settings.sharedFolders.isEmpty { sharedFolderList }
+            VStack(alignment: .leading, spacing: 12) {
+                SharingRequirementControls(model: model)
             }
-            if !model.settings.sharedFolders.isEmpty {
-                VStack(spacing: 0) {
-                    ForEach(model.settings.sharedFolders) { folder in
-                        HStack(spacing: 10) {
-                            Image(systemName: "folder.fill").foregroundStyle(Color.arpeggio)
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(URL(fileURLWithPath: folder.path).lastPathComponent).font(.callout.weight(.medium))
-                                Text((folder.path as NSString).abbreviatingWithTildeInPath).font(.caption).foregroundStyle(.secondary)
-                                    .lineLimit(1).truncationMode(.middle)
-                            }
-                            Spacer()
-                            if let summary = model.shareSummaries[folder.path] {
-                                Text("\(summary.files.formatted()) files · \(Format.bytes(summary.bytes))").font(.caption).foregroundStyle(.secondary).monospacedDigit()
-            } else if model.indexing {
-                Text(model.shareProgress.description).font(.caption).foregroundStyle(.secondary).lineLimit(3)
-                                ProgressView().controlSize(.small)
-                            }
-                            Button { Task { await model.unshare(folder) } } label: { Image(systemName: "minus.circle") }
-                                .buttonStyle(.borderless).help("Stop sharing")
-                        }
-                        .padding(.horizontal, 12).padding(.vertical, 8)
-                        Divider()
-                    }
-                }
-                .background(.quaternary.opacity(0.4), in: .rect(cornerRadius: 10))
-                .frame(maxWidth: 480)
-            }
+            .padding(14)
+            .background(.quaternary.opacity(0.4), in: .rect(cornerRadius: 12))
+            .frame(maxWidth: 480)
         }
         .padding(32)
+    }
+
+    private var musicFolderShared: Bool {
+        guard let music = AppModel.musicFolder else { return false }
+        return model.settings.sharedFolders.contains { $0.path == music.standardizedFileURL.path }
+    }
+
+    private var shareChoices: some View {
+        VStack(spacing: 10) {
+            if let music = AppModel.musicFolder {
+                if musicFolderShared {
+                    Button {} label: {
+                        Label("Music Folder Shared", systemImage: "checkmark.circle.fill").frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(true)
+                } else {
+                    Button { Task { await model.share([music]) } } label: {
+                        Label("Share My Music Folder", systemImage: "music.note.house").frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            }
+            if AppModel.musicFolder == nil {
+                customFolderButton.buttonStyle(.borderedProminent)
+            } else {
+                customFolderButton.buttonStyle(.bordered)
+            }
+        }
+        .controlSize(.large)
+        .frame(width: 300)
+    }
+
+    private var customFolderButton: some View {
+        Button {
+            let urls = FolderPicker.choose(prompt: "Share", multiple: true)
+            Task { await model.share(urls) }
+        } label: {
+            Label("Choose a Custom Folder…", systemImage: "folder.badge.plus").frame(maxWidth: .infinity)
+        }
+        .help("Share any folder on this Mac, such as a music library on an external drive")
+    }
+
+    private var sharedFolderList: some View {
+        VStack(spacing: 0) {
+            ForEach(model.settings.sharedFolders) { folder in
+                HStack(spacing: 10) {
+                    Image(systemName: "folder.fill").foregroundStyle(Color.arpeggio)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(URL(fileURLWithPath: folder.path).lastPathComponent).font(.callout.weight(.medium))
+                        Text((folder.path as NSString).abbreviatingWithTildeInPath).font(.caption).foregroundStyle(.secondary)
+                            .lineLimit(1).truncationMode(.middle)
+                    }
+                    Spacer()
+                    if let summary = model.shareSummaries[folder.path] {
+                        Text("\(summary.files.formatted()) files · \(Format.bytes(summary.bytes))").font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                    } else if model.indexing {
+                        ProgressView().controlSize(.small)
+                    }
+                    Button { Task { await model.unshare(folder) } } label: { Image(systemName: "minus.circle") }
+                        .buttonStyle(.borderless).help("Stop sharing")
+                }
+                .padding(.horizontal, 12).padding(.vertical, 8)
+                if folder.id != model.settings.sharedFolders.last?.id { Divider() }
+            }
+            if model.indexing {
+                Text(model.shareProgress.description)
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12).padding(.bottom, 8)
+            }
+        }
+        .background(.quaternary.opacity(0.4), in: .rect(cornerRadius: 10))
+        .frame(maxWidth: 480)
     }
 
     private var downloads: some View {
@@ -185,6 +232,7 @@ struct OnboardingView: View {
 
     private func move(_ delta: Int) {
         guard let next = Step(rawValue: step.rawValue + delta) else { return }
+        if step == .share { Task { await model.saveSettings() } }
         withAnimation(reduceMotion ? .default : .spring(duration: 0.4, bounce: 0.15)) { step = next }
     }
 
