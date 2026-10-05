@@ -100,6 +100,10 @@ public final class AppModel {
     @ObservationIgnored var shuttingDown = false
     @ObservationIgnored var rescanPending = false
     @ObservationIgnored var shareScanTask: Task<(Int, UInt64), Never>?
+    @ObservationIgnored var initialShareTask: Task<Void, Never>?
+    @ObservationIgnored var initialShareScan: @MainActor @Sendable (AppModel) async -> Void = { model in
+        await model.rescanShares()
+    }
     @ObservationIgnored var activeSessionGeneration: UInt64?
     @ObservationIgnored var shareWatcher: ShareWatcher?
     @ObservationIgnored var shareChangeTask: Task<Void, Never>?
@@ -172,12 +176,18 @@ public final class AppModel {
                 if progress.revision >= self.shareProgress.revision { self.shareProgress = progress }
             }
         }
-        await rescanShares()
-        scheduleUpdateChecks()
         await transferEngine.setUploadAuthorizer { [weak self] user, file, url in
             guard let self else { return false }
             return await self.authorizeUpload(user: user, file: file, url: url)
         }
+        guard !shuttingDown else { return }
+        if !settings.sharedFolders.isEmpty {
+            initialShareTask = Task { [weak self] in
+                guard let self, !Task.isCancelled, !self.shuttingDown else { return }
+                await self.initialShareScan(self)
+            }
+        }
+        scheduleUpdateChecks()
         shareWatchTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(120))
@@ -212,6 +222,7 @@ public final class AppModel {
         intentionallyOffline = true; loginRevision &+= 1
         reconnectTask?.cancel(); reconnectTask = nil; wishlistTask?.cancel(); wishlistTask = nil
         batchTask?.cancel(); searchStopTask?.cancel(); shareWatchTask?.cancel(); shareScanTask?.cancel()
+        initialShareTask?.cancel()
         shareProgressTask?.cancel()
         for task in uploadRequestTasks.values { task.cancel() }
         uploadRequestTasks.removeAll(); uploadRequestUsers.removeAll()
@@ -226,6 +237,8 @@ public final class AppModel {
         await transferEngine.purgePreviewCache()
         statisticsDirty = true; await saveStatistics()
         _ = await shareScanTask?.value
+        await initialShareTask?.value
+        shareScanTask = nil; initialShareTask = nil
         do { try await database.put(settings, collection: "settings", id: "main") } catch { log(error.localizedDescription) }
         await database.close()
     }
