@@ -11,7 +11,20 @@ import ProtocolFixtures
     #expect(!SharingPolicy.allows(required: true, files: 0))
     #expect(SharingPolicy.allows(required: true, files: 1))
     #expect(!AppSettings().requiresSharing)
-    #expect(AppSettings().sharingMessage == "You must share files in order to download from me.")
+    #expect(AppSettings().sharingMessage == "Hey, please share something before downloading from me. Thanks.")
+}
+
+@Test func sharingMessageKeepsCustomTextAndNeverSendsBlank() throws {
+    var settings = AppSettings()
+    #expect(settings.sharingRequiredMessage == nil)
+    #expect(settings.sharingMessageDraft == AppSettings.defaultSharingMessage)
+    settings.sharingRequiredMessage = "Share a folder first, please."
+    let restored = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(settings))
+    #expect(restored.sharingMessage == "Share a folder first, please.")
+    #expect(restored.sharingMessageDraft == "Share a folder first, please.")
+    settings.sharingRequiredMessage = "  \n "
+    #expect(settings.sharingMessageDraft == "  \n ")
+    #expect(settings.sharingMessage == AppSettings.defaultSharingMessage)
 }
 
 private actor LookupCounter {

@@ -47,7 +47,14 @@ public struct AppSettings: Codable, Sendable {
     public var usesNATPMP: Bool { natPMPEnabled ?? true }
     public var usesUPnP: Bool { upnpEnabled ?? true }
     public var requiresSharing: Bool { requireSharing ?? false }
-    public var sharingMessage: String { sharingRequiredMessage ?? "You must share files in order to download from me." }
+    public static let defaultSharingMessage = "Hey, please share something before downloading from me. Thanks."
+    /// The text being edited, which may be empty while someone retypes it.
+    public var sharingMessageDraft: String { sharingRequiredMessage ?? Self.defaultSharingMessage }
+    /// The text actually sent. A blank message falls back to the default rather than sending nothing.
+    public var sharingMessage: String {
+        let text = sharingMessageDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? Self.defaultSharingMessage : text
+    }
     public var showsMenuBarIcon: Bool { menuBarIcon ?? true }
     public var uploadQueueLimit: Int { max(0, queuedUploadsPerUser ?? 200) }
     public var checksForUpdates: Bool { checkForUpdates ?? true }
