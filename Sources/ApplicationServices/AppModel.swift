@@ -80,7 +80,10 @@ public final class AppModel {
     @ObservationIgnored var notificationDates: [String: Date] = [:]
     @ObservationIgnored var loginRevision: UInt64 = 0
     @ObservationIgnored var reconnectAllowed = false
-    @ObservationIgnored let credentials = CredentialWrites()
+    @ObservationIgnored var credentials = CredentialWrites()
+    @ObservationIgnored var loginSettingsSave: @MainActor @Sendable (AppModel) async -> Void = { model in
+        await model.saveSettings()
+    }
     @ObservationIgnored var playbackRevision: UInt64 = 0
     @ObservationIgnored var autoAway = false
     @ObservationIgnored var idleTask: Task<Void, Never>?
@@ -248,34 +251,52 @@ public final class AppModel {
         error = nil
         loginRevision &+= 1; let revision = loginRevision
         activeSessionGeneration = nil
-        await sharingPolicy.reset()
         let configuration = settings
+        let credentialGeneration = await credentials.generation
+        guard revision == loginRevision, !shuttingDown else { return }
+        await sharingPolicy.reset()
+        guard revision == loginRevision, !shuttingDown else { return }
         if !automatic { reconnectAllowed = false }
         intentionallyOffline = false
         do {
             try await session.connect(host: configuration.server, port: configuration.port, user: configuration.username,
                                       password: password, listeningPort: configuration.listeningPort)
             guard revision == loginRevision, !shuttingDown else { return }
-            guard settings.username == configuration.username, settings.server == configuration.server, settings.port == configuration.port else {
+            guard settings.username == configuration.username, settings.server == configuration.server,
+                  settings.port == configuration.port, settings.listeningPort == configuration.listeningPort else {
                 await disconnect(); error = "Account settings changed while signing in. Please reconnect."; return
             }
+            let generation = await session.currentGeneration()
+            guard revision == loginRevision, !shuttingDown else { return }
             activeAccount = configuration.username; reconnectAllowed = true
-            activeSessionGeneration = await session.currentGeneration()
-            guard revision == loginRevision else { return }
-            messages = try await database.all(ChatMessage.self, collection: "messages").filter { $0.account == activeAccount }.sorted { $0.date < $1.date }
-            guard revision == loginRevision else { return }
-            let credentialGeneration = await credentials.generation
-            await saveSettings()
-            try await session.send(code: 64)
-            try await session.send(code: 92)
-            await publishShares()
-            for user in users { try await watchUser(user.username) }
-            await applyPresence()
-            mapListeningPort()
-            if remember, revision == loginRevision, !shuttingDown {
+            activeSessionGeneration = generation
+            if remember {
                 do { try await credentials.save(password: password, for: configuration.username, ifGeneration: credentialGeneration) }
-                catch { self.error = "Signed in, but couldn’t save the password in Keychain. You’ll need to enter it again when reconnecting." }
+                catch {
+                    if revision == loginRevision, !shuttingDown {
+                        self.error = "Signed in, but couldn’t save the password in Keychain. You’ll need to enter it again when reconnecting."
+                    }
+                }
             }
+            guard revision == loginRevision, !shuttingDown else { return }
+            let loadedMessages = try await database.all(ChatMessage.self, collection: "messages").filter { $0.account == configuration.username }.sorted { $0.date < $1.date }
+            guard revision == loginRevision, !shuttingDown else { return }
+            messages = loadedMessages
+            await loginSettingsSave(self)
+            guard revision == loginRevision, !shuttingDown else { return }
+            try await session.send(code: 64, generation: generation)
+            guard revision == loginRevision, !shuttingDown else { return }
+            try await session.send(code: 92, generation: generation)
+            guard revision == loginRevision, !shuttingDown else { return }
+            await publishShares()
+            guard revision == loginRevision, !shuttingDown else { return }
+            for user in users {
+                try await watchUser(user.username, generation: generation)
+                guard revision == loginRevision, !shuttingDown else { return }
+            }
+            await applyPresence()
+            guard revision == loginRevision, !shuttingDown else { return }
+            mapListeningPort()
             await requestNotifications()
         } catch { if revision == loginRevision, !shuttingDown { self.error = error.localizedDescription } }
     }
@@ -348,20 +369,32 @@ public final class AppModel {
         } catch { self.error = error.localizedDescription }
     }
     func log(_ text: String) { diagnostics.append(text); diagnostics = Array(diagnostics.suffix(200)) }
-    func watchUser(_ user: String) async throws { var writer = WireWriter(); writer.string(user); try await session.send(code: 5, payload: writer.data) }
+    func watchUser(_ user: String, generation: UInt64? = nil) async throws {
+        var writer = WireWriter(); writer.string(user)
+        try await session.send(code: 5, payload: writer.data, generation: generation)
+    }
 }
 
 /// Serializes Keychain writes so a save from a sign-in that started earlier can't recreate a password
 /// that Sign Out has since deleted.
 actor CredentialWrites {
     private(set) var generation: UInt64 = 0
+    private let backend: Backend
+    init(backend: Backend = .keychain) { self.backend = backend }
     func save(password: String, for user: String, ifGeneration expected: UInt64) throws {
         guard generation == expected else { return }
-        try Keychain.save(password: password, for: user)
+        try backend.save(password, user)
     }
     func delete(for user: String) throws {
         generation &+= 1
-        try Keychain.delete(for: user)
+        try backend.delete(user)
+    }
+    struct Backend: Sendable {
+        var save: @Sendable (String, String) throws -> Void
+        var delete: @Sendable (String) throws -> Void
+        static var keychain: Self {
+            Self(save: { try Keychain.save(password: $0, for: $1) }, delete: { try Keychain.delete(for: $0) })
+        }
     }
 }
 
