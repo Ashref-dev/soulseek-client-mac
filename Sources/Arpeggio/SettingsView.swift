@@ -15,6 +15,7 @@ struct SettingsView: View {
             Tab("Profile", systemImage: "person.crop.circle") { ProfileSettings(model: model) }
             Tab("Transfers", systemImage: "arrow.up.arrow.down") { TransferSettings(model: model) }
             Tab("Sharing", systemImage: "externaldrive") { SharingSettings(model: model) }
+            Tab("Statistics", systemImage: "chart.bar.xaxis") { StatisticsSettings(model: model) }
             Tab("Advanced", systemImage: "wrench.and.screwdriver") { AdvancedSettings(model: model) }
         }
         .frame(width: 560)
