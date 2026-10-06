@@ -17,7 +17,7 @@ Soulseek is a long-running peer-to-peer network where people share their music l
 - **Statistics** count everything you have downloaded and uploaded since you started, in the sidebar and in Settings > Statistics. Totals are in decimal gigabytes (1 GB = 1,000,000,000 bytes) with completed file counts. Copy a text summary, or copy, save or share a 1200 x 676 picture. Your username and profile picture appear only if you turn them on.
 - **Basic Soulseek workflows:** wishlist searches, received searches, browsing someone's library, private messages, chat rooms, a user list with trusted and ignored people, Available and Away status, your own picture and description, upload slots, speed limits and per-user queue limits. This is not a promise of exhaustive parity with mature clients.
 - **Pause entire directions.** Pause or resume Uploads and Downloads independently from the menu bar or Network menu. Active sockets stop, queues remain, and downloads resume from partial bytes. Presence stays unchanged. These controls are session-only.
-- **Router diagnostics.** Choose NAT-PMP and UPnP independently. Arpeggio reports actual mapping acknowledgments, not assumed compatibility or external reachability. Check Ports tests the local TCP listener only. Router/firewall/VPN and internet reachability still need an external check; listening ports are never changed automatically.
+- **Router diagnostics.** Choose NAT-PMP and UPnP independently. Arpeggio reports actual mapping acknowledgments, not assumed compatibility or external reachability. Check Ports tests the local TCP listener. Check External Reachability contacts Soulseek's HTTPS port checker only after confirmation, with no credentials. It tests the public route used by that request; VPN routes may differ. Listening ports are never changed automatically.
 - **Updates itself** from GitHub Releases, and only installs updates signed by the same developer.
 
 ## Install
@@ -29,6 +29,10 @@ Soulseek is a long-running peer-to-peer network where people share their music l
 Arpeggio needs macOS 27 or later. A welcome guide walks you through signing in and sharing your music folder. There is no separate sign-up on Soulseek: if the username you pick is free, the server registers it the first time you sign in.
 
 With **Remember password** enabled, Arpeggio saves your password in Keychain after successful authentication and connects automatically on the next launch without waiting for folder indexing. If the password is missing or Keychain blocks access, the app explains what needs attention instead of staying silently offline. Sign Out disconnects and forgets the password; Disconnect only goes offline for the current session.
+
+Shared-folder metadata is cached after a successful scan. Relaunch still checks actual files, paths, sizes, modification times and current sharing permissions before advertising them. Unchanged Settings saves do not queue another scan; filesystem changes still do. A first scan of a large library can take time, and the app now distinguishes indexing from having no configured shares.
+
+See [the 0.6 release gates](docs/ROADMAP-0.6.md) for remaining distribution, reliability and performance work. Current downloadable builds are development releases, not notarized public-distribution builds.
 
 ## Build from source
 
