@@ -51,14 +51,29 @@ extension AppModel {
             shareWatcher = try ShareWatcher(folders: paths.map { URL(fileURLWithPath: $0) }, ignoring: [dataDirectory]) { [weak self] in
                 Task { @MainActor [weak self] in
                     guard let self, !self.shuttingDown else { return }
-                    self.shareChangeTask?.cancel()
-                    self.shareChangeTask = Task { [weak self] in
-                        do { try await Task.sleep(for: .seconds(1.5)); try Task.checkCancellation() } catch { return }
-                        await self?.rescanShares()
-                    }
+                    self.scheduleShareRescan()
                 }
             }
         } catch { log("File watching unavailable. Automatic rescans will run every two minutes.") }
+    }
+
+    @discardableResult
+    func scheduleShareRescan(after delay: Duration = .seconds(1.5)) -> Task<Void, Never> {
+        shareChangeTask?.cancel()
+        shareChangeRevision &+= 1
+        let revision = shareChangeRevision
+        let task = Task { [weak self] in
+            do { try await Task.sleep(for: delay); try Task.checkCancellation() }
+            catch {
+                if let self, self.shareChangeRevision == revision { self.shareChangeTask = nil }
+                return
+            }
+            guard let self, !self.shuttingDown, self.shareChangeRevision == revision else { return }
+            self.shareChangeTask = nil
+            await self.rescanShares()
+        }
+        shareChangeTask = task
+        return task
     }
 
     public func share(_ urls: [URL]) async {

@@ -116,6 +116,7 @@ public final class AppModel {
     @ObservationIgnored var activeSessionGeneration: UInt64?
     @ObservationIgnored var shareWatcher: ShareWatcher?
     @ObservationIgnored var shareChangeTask: Task<Void, Never>?
+    @ObservationIgnored var shareChangeRevision: UInt64 = 0
     @ObservationIgnored var shareProgressTask: Task<Void, Never>?
     @ObservationIgnored let sharingPolicy = SharingPolicy()
     @ObservationIgnored var uploadRequestTasks: [UUID: Task<Void, Never>] = [:]
