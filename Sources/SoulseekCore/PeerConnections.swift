@@ -3,7 +3,7 @@ import Network
 
 extension SoulseekSession {
     func startListener(port: UInt16) async throws {
-        guard port >= 1024, let endpoint = NWEndpoint.Port(rawValue: port) else { throw ProtocolError.invalid("Choose a listening port between 1024 and 65535 in Advanced settings.") }
+        guard port >= 1024, let endpoint = NWEndpoint.Port(rawValue: port) else { throw ProtocolError.invalid("Choose a listening port between 1024 and 65535 in Settings › Account.") }
         let listener = try NWListener(using: .tcp, on: endpoint)
         let attempt = generation
         listener.newConnectionHandler = { [weak self] connection in
@@ -16,7 +16,7 @@ extension SoulseekSession {
                 case .ready: listener.stateUpdateHandler = nil; ready.resume()
                 case .failed:
                     listener.stateUpdateHandler = nil; listener.cancel()
-                    ready.resume(throwing: ProtocolError.invalid("Listening port \(port) is unavailable. Choose a different port in Advanced settings."))
+                    ready.resume(throwing: ProtocolError.invalid("Listening port \(port) is unavailable. Choose a different port in Settings › Account."))
                 case .cancelled: listener.stateUpdateHandler = nil; ready.resume(throwing: CancellationError())
                 default: break
                 }
