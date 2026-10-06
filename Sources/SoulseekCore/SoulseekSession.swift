@@ -38,6 +38,12 @@ public actor SoulseekSession {
         events = AsyncStream(unfolding: { await channel.next() }, onCancel: { Task { await channel.close() } })
     }
     public func currentGeneration() -> UInt64 { generation }
+    /// The peer listener port bound by `expected`, or nil once that session generation no longer owns a
+    /// connected server and listener.
+    public func listeningPort(generation expected: UInt64) -> UInt16? {
+        guard expected == generation, server != nil else { return nil }
+        return listener?.port?.rawValue
+    }
     func emit(_ event: SoulseekEvent) async { await channel.send(SessionEvent(generation: generation, account: username, event: event)) }
     public func nextToken() -> UInt32 { token &+= 1; return token }
     public func retireSearch(_ token: UInt32) { activeSearches.remove(token) }
