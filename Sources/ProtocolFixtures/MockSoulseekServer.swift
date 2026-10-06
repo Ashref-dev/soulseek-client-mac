@@ -3,6 +3,18 @@ import Network
 import SoulseekCore
 
 public actor MockSoulseekServer {
+    public struct IndirectRequest: Sendable, Equatable {
+        public let requester: String
+        public let target: String
+        public let type: String
+        public let token: UInt32
+        public let callbackPort: UInt32
+    }
+    public struct AddressReply: Sendable, Equatable {
+        public let requester: String
+        public let target: String
+        public let port: UInt32
+    }
     let listener: NWListener
     var clients: [String: FramedConnection] = [:]
     var ports: [String: UInt32] = [:]
@@ -10,6 +22,8 @@ public actor MockSoulseekServer {
     var messageID: UInt32 = 0
     var rooms: [String: Set<String>] = [:]
     public var trace: [String] = []
+    public private(set) var indirectRequests: [IndirectRequest] = []
+    public private(set) var addressReplies: [AddressReply] = []
     let loginDelay: Duration
     let forceIndirect: Set<String>
     private init(listener: NWListener, loginDelay: Duration, forceIndirect: Set<String>) {
@@ -70,11 +84,14 @@ public actor MockSoulseekServer {
                     }
                 case 3:
                     let target = try reader.string()
+                    let port = forceIndirect.contains(target) ? 1 : (ports[target] ?? 0)
+                    addressReplies.append(AddressReply(requester: user, target: target, port: port))
                     var response = WireWriter(); response.string(target); response.uint(0x7f000001)
-                    response.uint(forceIndirect.contains(target) ? 1 : (ports[target] ?? 0)); response.uint(0); response.byte(0); response.byte(0)
+                    response.uint(port); response.uint(0); response.byte(0); response.byte(0)
                     try await connection.send(code: 3, payload: response.data)
                 case 18:
                     let token = try reader.uint(); let target = try reader.string(); let type = try reader.string()
+                    indirectRequests.append(IndirectRequest(requester: user, target: target, type: type, token: token, callbackPort: ports[user] ?? 0))
                     if let peer = clients[target] {
                         var response = WireWriter(); response.string(user); response.string(type); response.uint(0x7f000001)
                         response.uint(ports[user] ?? 0); response.uint(token); response.byte(0); response.uint(0); response.uint(0)
