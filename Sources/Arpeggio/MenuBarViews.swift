@@ -122,16 +122,34 @@ struct MenuBarPanel: View {
                 Tile(symbol: "arrow.up", title: "Uploading", value: Format.speed(model.uploadSpeed),
                      detail: count(model.activeUploads, "listener"), active: model.activeUploads > 0)
             }
-            Label {
-                Text(model.sharedCount > 0 ? "Sharing \(model.sharedCount.formatted()) files · \(Format.bytes(model.sharedBytes))" : "You aren’t sharing any folders yet")
-            } icon: { Image(systemName: model.sharedCount > 0 ? "externaldrive.fill.badge.checkmark" : "externaldrive.badge.plus") }
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            shareStatus
             if model.statistics.uploadedBytes > 0 {
                 Label("\(Format.bytes(model.statistics.uploadedBytes)) shared with \(model.statistics.listeners.count.formatted()) people so far", systemImage: "heart.fill")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+        }
+    }
+
+    @ViewBuilder private var shareStatus: some View {
+        let status = model.shareStatus
+        let label = Label {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(status.headline)
+                if let detail = status.detail { Text(detail).font(.caption2).fixedSize(horizontal: false, vertical: true) }
+                if !status.isSharing, !status.isIndexing { Text("Open Arpeggio, then choose Shared Files.").font(.caption2).foregroundStyle(Color.arpeggio) }
+            }
+        } icon: {
+            if status.isIndexing { ProgressView().controlSize(.mini) } else { Image(systemName: status.symbol) }
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        if status.isSharing || status.isIndexing {
+            label
+        } else {
+            Button(action: openMain) { label.contentShape(.rect) }
+                .buttonStyle(.plain)
+                .help("Open Arpeggio to manage Shared Files")
         }
     }
 
