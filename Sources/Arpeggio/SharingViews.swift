@@ -95,21 +95,22 @@ struct SharedFilesView: View {
     private var summary: some View {
         let audio = model.shareSummaries.values.reduce(0) { $0 + $1.audioFiles }
         let directories = model.shareSummaries.values.reduce(0) { $0 + $1.folders }
+        let status = model.shareStatus
         return HStack(alignment: .center, spacing: 22) {
             ZStack {
                 Circle().fill(Color.arpeggio.opacity(0.14)).frame(width: 64, height: 64)
-                Image(systemName: model.sharedCount > 0 ? "externaldrive.fill.badge.wifi" : "externaldrive.badge.plus")
+                Image(systemName: status.isSharing ? "externaldrive.fill.badge.wifi" : status.symbol)
                     .font(.system(size: 26)).foregroundStyle(Color.arpeggio)
                     .symbolEffect(.pulse, options: .repeating, isActive: model.indexing || model.activeUploads > 0)
             }
             VStack(alignment: .leading, spacing: 4) {
-                Text(model.sharedCount > 0 ? "Sharing \(model.sharedCount.formatted()) files" : "You aren’t sharing anything yet")
+                Text(status.isSharing ? "Sharing \(model.sharedCount.formatted()) files" : status.headline)
                     .font(.title2.weight(.semibold))
                     .contentTransition(.numericText())
-                Text(statusLine).font(.callout).foregroundStyle(.secondary)
+                Text(statusLine(status)).font(.callout).foregroundStyle(.secondary)
             }
             Spacer(minLength: 12)
-            if model.sharedCount > 0 {
+            if status.isSharing {
                 HStack(spacing: 18) {
                     stat(Format.bytes(model.sharedBytes), "Size")
                     stat(directories.formatted(), "Folders")
@@ -122,11 +123,17 @@ struct SharedFilesView: View {
         .background(.quaternary.opacity(0.45), in: .rect(cornerRadius: 16))
     }
 
-    private var statusLine: String {
-        if model.indexing { return model.shareProgress.description }
-        if model.settings.sharedFolders.isEmpty { return "Add a folder so people can browse and download from you." }
-        if !model.connection.isConnected { return "Indexed. Visible to others once you’re connected." }
-        return "Visible to everyone on Soulseek. Changes in these folders are picked up automatically."
+    private func statusLine(_ status: ShareStatus) -> String {
+        switch status {
+        case .noFolders: return "Add a folder so people can browse and download from you."
+        case .indexing: return model.shareProgress.description
+        case .pending, .empty: return status.detail ?? ""
+        case .ready:
+            let visibility = model.connection.isConnected
+                ? "Visible to everyone on Soulseek. Changes in these folders are picked up automatically."
+                : "Indexed. Visible to others once you’re connected."
+            return status.detail.map { "\(visibility) \($0)" } ?? visibility
+        }
     }
 
     private func stat(_ value: String, _ label: String) -> some View {
@@ -182,12 +189,14 @@ struct SharedFilesView: View {
 
     @ViewBuilder private var browser: some View {
         if model.settings.sharedFolders.isEmpty || model.sharedLibrary.isEmpty {
+            let status = model.shareStatus
             ContentUnavailableView {
-                Label(model.indexing ? "Indexing…" : "Nothing to Browse", systemImage: "externaldrive")
+                Label(status == .noFolders ? "Nothing to Browse" : status.headline, systemImage: status.symbol)
             } description: {
-                Text(model.indexing ? "Your folders are being indexed." : "Share a folder to see exactly what other people see.")
+                Text(status == .noFolders ? "Share a folder to see exactly what other people see." : status.detail ?? "")
             } actions: {
-                if !model.indexing { Button("Add Folder…", action: add) }
+                if status == .noFolders { Button("Add Folder…", action: add) }
+                else if case .empty = status { Button("Show Folders") { mode = .folders } }
             }
         } else {
             LibraryBrowser(folders: model.sharedLibrary, identity: "local-\(model.sharedCount)-\(model.sharedBytes)", rootTitle: "My Shares") { files, folder in
