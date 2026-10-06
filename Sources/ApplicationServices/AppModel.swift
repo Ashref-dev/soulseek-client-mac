@@ -76,6 +76,8 @@ public final class AppModel {
     @ObservationIgnored var shareWatchTask: Task<Void, Never>?
     @ObservationIgnored var indexedFolders: [ShareFolder] = []
     @ObservationIgnored var indexedExclusions: [String] = []
+    @ObservationIgnored var scanningFolders: [ShareFolder]?
+    @ObservationIgnored var scanningExclusions: [String]?
     @ObservationIgnored var folderDownloads: [UInt32: (String, String)] = [:]
     @ObservationIgnored var notificationDates: [String: Date] = [:]
     @ObservationIgnored var loginRevision: UInt64 = 0
@@ -104,9 +106,12 @@ public final class AppModel {
     @ObservationIgnored var startupConnectionAttempted = false
     @ObservationIgnored var rescanPending = false
     @ObservationIgnored var shareScanTask: Task<(Int, UInt64), Never>?
+    @ObservationIgnored var scanShares: @MainActor @Sendable (AppModel, [ShareFolder], [String]) async -> (Int, UInt64) = { model, folders, exclusions in
+        await model.shareIndex.scan(folders: folders.map { (URL(fileURLWithPath: $0.path), $0.buddyOnly) }, exclusions: exclusions)
+    }
     @ObservationIgnored var initialShareTask: Task<Void, Never>?
     @ObservationIgnored var initialShareScan: @MainActor @Sendable (AppModel) async -> Void = { model in
-        await model.rescanShares()
+        await model.rescanShares(configurationOnly: true)
     }
     @ObservationIgnored var activeSessionGeneration: UInt64?
     @ObservationIgnored var shareWatcher: ShareWatcher?
@@ -188,6 +193,12 @@ public final class AppModel {
         if !settings.sharedFolders.isEmpty {
             initialShareTask = Task { [weak self] in
                 guard let self, !Task.isCancelled, !self.shuttingDown else { return }
+                do {
+                    if let cache = try await self.database.all(ShareMetadataCache.self, collection: "share-metadata", limit: 1).first {
+                        await self.shareIndex.restoreMetadataCache(cache)
+                    }
+                } catch { self.log("Share metadata cache unavailable; rebuilding metadata.") }
+                guard !Task.isCancelled, !self.shuttingDown else { return }
                 await self.initialShareScan(self)
             }
         }
@@ -207,7 +218,7 @@ public final class AppModel {
             try await database.put(settings, collection: "settings", id: "main")
             if menuBarExtraVisible != settings.showsMenuBarIcon { menuBarExtraVisible = settings.showsMenuBarIcon }
             await configureTransfers()
-            if settings.sharedFolders != indexedFolders || (settings.shareExclusions ?? []) != indexedExclusions { await rescanShares() }
+            if shareConfigurationNeedsScan { await rescanShares(configurationOnly: true) }
             await transferEngine.revalidateUploads()
         } catch { self.error = error.localizedDescription }
     }

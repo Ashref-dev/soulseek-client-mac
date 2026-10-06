@@ -4,19 +4,30 @@ import ShareIndexer
 import Persistence
 
 extension AppModel {
-    public func rescanShares() async {
+    var shareConfigurationNeedsScan: Bool {
+        settings.sharedFolders != (scanningFolders ?? indexedFolders) ||
+        (settings.shareExclusions ?? []) != (scanningExclusions ?? indexedExclusions)
+    }
+
+    public func rescanShares(configurationOnly: Bool = false) async {
         guard !shuttingDown else { return }
-        guard !indexing else { rescanPending = true; return }
+        guard !indexing else {
+            if !configurationOnly { rescanPending = true }
+            return
+        }
+        if configurationOnly, !shareConfigurationNeedsScan { return }
         indexing = true
+        defer { indexing = false; scanningFolders = nil; scanningExclusions = nil; shareScanTask = nil }
         repeat {
             rescanPending = false
             let folders = settings.sharedFolders
             let exclusions = settings.shareExclusions ?? []
-            let index = shareIndex
-            let task = Task { await index.scan(folders: folders.map { (URL(fileURLWithPath: $0.path), $0.buddyOnly) }, exclusions: exclusions) }
+            scanningFolders = folders; scanningExclusions = exclusions
+            updateShareWatcher()
+            let task = Task { await self.scanShares(self, folders, exclusions) }
             shareScanTask = task
             let count = await task.value
-            guard !shuttingDown else { indexing = false; return }
+            guard !shuttingDown, !task.isCancelled, !Task.isCancelled else { return }
             sharedCount = count.0; sharedBytes = count.1
             sharedLibrary = await shareIndex.library(allowPrivate: true, configuredFolders: currentShareFolders)
             shareErrors = await shareIndex.errors
@@ -24,8 +35,9 @@ extension AppModel {
             indexedFolders = folders; indexedExclusions = exclusions
             do { try await database.put(RemoteLibrary(user: "local", folders: sharedLibrary), collection: "share-index", id: "local") }
             catch { self.error = error.localizedDescription }
+            do { try await database.put(shareIndex.metadataCache(), collection: "share-metadata", id: "local") }
+            catch { self.error = error.localizedDescription }
         } while rescanPending || indexedFolders != settings.sharedFolders || indexedExclusions != (settings.shareExclusions ?? [])
-        indexing = false; shareScanTask = nil
         updateShareWatcher()
         await publishShares()
     }
