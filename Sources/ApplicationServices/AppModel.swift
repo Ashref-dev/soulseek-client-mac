@@ -30,6 +30,7 @@ public final class AppModel {
     public var downloadsSuspended = false
     public var uploadsSuspended = false
     public var portCheck: String?
+    public internal(set) var externalPortCheck: ExternalPortCheck?
     public var sharedCount = 0
     public var sharedBytes: UInt64 = 0
     public var shareErrors: [String] = []
@@ -122,6 +123,11 @@ public final class AppModel {
     @ObservationIgnored var uploadRequestTasks: [UUID: Task<Void, Never>] = [:]
     @ObservationIgnored var uploadRequestUsers: [UUID: String] = [:]
     @ObservationIgnored var watchedPaths: [String] = []
+    @ObservationIgnored var externalPortCheckTask: Task<ExternalPortCheck.Outcome, Never>?
+    @ObservationIgnored var externalPortCheckRevision: UInt64 = 0
+    @ObservationIgnored var externalPortProbe: @Sendable (UInt16) async -> ExternalPortCheck.Outcome = { port in
+        await ExternalPortChecker().check(port: port)
+    }
     public let dataDirectory: URL
 
     static var defaultDataDirectory: URL { FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Arpeggio") }
@@ -240,6 +246,7 @@ public final class AppModel {
         batchTask?.cancel(); searchStopTask?.cancel(); shareWatchTask?.cancel(); shareScanTask?.cancel()
         initialShareTask?.cancel()
         shareProgressTask?.cancel()
+        cancelExternalPortCheck()
         for task in uploadRequestTasks.values { task.cancel() }
         uploadRequestTasks.removeAll(); uploadRequestUsers.removeAll()
         idleTask?.cancel(); statisticsTask?.cancel(); updateTask?.cancel(); receivedFlushTask?.cancel()
@@ -347,6 +354,7 @@ public final class AppModel {
     public func disconnect() async {
         loginRevision &+= 1
         activeSessionGeneration = nil
+        cancelExternalPortCheck()
         await sharingPolicy.reset()
         intentionallyOffline = true; reconnectAllowed = false
         reconnectTask?.cancel(); reconnectTask = nil; wishlistTask?.cancel(); wishlistTask = nil
