@@ -151,10 +151,18 @@ struct TransfersView: View {
         if !filter.isEmpty {
             ContentUnavailableView.search(text: filter)
         } else if upload {
-            ContentUnavailableView("No Uploads", systemImage: "arrow.up.circle",
-                                   description: Text(model.settings.sharedFolders.isEmpty
-                                                     ? "Share a folder in Settings so others can download from you."
-                                                     : "Files other people request from your shares appear here."))
+            let status = model.shareStatus
+            ContentUnavailableView {
+                Label("No Uploads", systemImage: "arrow.up.circle")
+            } description: {
+                switch status {
+                case .ready: Text("Files other people request from your shares appear here.")
+                case .noFolders: Text("Share a folder so others can download from you.")
+                default: Text([status.headline, status.detail].compactMap { $0 }.joined(separator: "\n"))
+                }
+            } actions: {
+                if !status.isSharing, !status.isIndexing { Button("Open Shared Files") { navigator.go(.shared) } }
+            }
         } else {
             ContentUnavailableView {
                 Label("No Downloads", systemImage: "arrow.down.circle")
