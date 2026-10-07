@@ -7,6 +7,7 @@ extension TransferEngine {
     /// Starts (or reuses) a transfer that can be played while it arrives. Previews live in a cache folder
     /// until kept, skip the download-slot limit, and are discarded when abandoned or on relaunch.
     public func preview(_ result: SearchResult) async throws -> String {
+        try requireAccountingInitialization()
         guard PreviewFormat.classify(result.file.name) != nil else { throw ProtocolError.invalid("This format has no built-in preview. Download it to use another app.") }
         guard result.file.size > 0, result.file.size <= PreviewFormat.maximumBytes else { throw ProtocolError.oversized }
         if let existing = transfers.first(where: { !$0.upload && $0.user == result.user && $0.file.path == result.file.path && $0.status != .cancelled }) {
@@ -31,7 +32,9 @@ extension TransferEngine {
     /// Turns a preview into a normal download. Finished files move into the download folder;
     /// unfinished ones keep their partial bytes and complete straight into it.
     public func keep(_ id: String) async throws {
+        try requireAccountingInitialization()
         guard let index = transfers.firstIndex(where: { $0.id == id }), transfers[index].isPreview else { return }
+        cancelDeferredPreviewCleanup(id)
         let item = transfers[index]
         var (destination, _) = try SafeDestination.plan(root: downloadRoot, user: item.user, remotePath: item.file.path, layout: layout)
         if item.status == .completed, let current = item.destination {
@@ -48,7 +51,14 @@ extension TransferEngine {
     }
 
     public func discardPreview(_ id: String) async {
+        await discardPreview(id, deferredIdentity: nil)
+    }
+
+    func discardPreview(_ id: String, deferredIdentity: UUID?) async {
+        guard !accountingBlocked else { return }
         guard let item = transfers.first(where: { $0.id == id }), item.isPreview, previewTerminalOwners[id] == nil else { return }
+        if closing.contains(id) { deferPreviewCleanup(id, discard: true); return }
+        if deferredIdentity == nil { cancelDeferredPreviewCleanup(id) }
         let owner = UUID(); previewTerminalOwners[id] = owner
         defer { if previewTerminalOwners[id] == owner { previewTerminalOwners.removeValue(forKey: id) } }
         previewDeadlines.removeValue(forKey: id)?.cancel()
@@ -60,9 +70,12 @@ extension TransferEngine {
         publish(); await pump()
     }
 
-    public func snapshot() -> [Transfer] { transfers }
-    func expirePreview(_ id: String) async {
+    public func snapshot() -> [Transfer] { runtimeSnapshot() }
+    func expirePreview(_ id: String, deferredIdentity: UUID? = nil) async {
+        guard !accountingBlocked else { return }
         guard let item = transfers.first(where: { $0.id == id }), item.isPreview, item.status != .completed, previewTerminalOwners[id] == nil else { return }
+        if closing.contains(id) { deferPreviewCleanup(id, discard: false); return }
+        if deferredIdentity == nil { cancelDeferredPreviewCleanup(id) }
         let owner = UUID(); previewTerminalOwners[id] = owner
         defer { if previewTerminalOwners[id] == owner { previewTerminalOwners.removeValue(forKey: id) } }
         await change(id, to: .cancelled)
@@ -75,6 +88,7 @@ extension TransferEngine {
     /// Deletes everything in the preview cache that no transfer still points at (abandoned previews,
     /// leftovers from a crash). Kept previews still finishing keep their partial file.
     public func purgePreviewCache() {
+        guard !accountingBlocked else { return }
         let manager = FileManager.default
         let root = previewRoot.standardizedFileURL
         guard manager.fileExists(atPath: root.path), root.resolvingSymlinksInPath().path == root.path else { return }
