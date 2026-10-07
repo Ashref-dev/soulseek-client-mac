@@ -99,18 +99,28 @@ struct MenuBarPanel: View {
             ProfileAvatar(model: model, size: 40)
             VStack(alignment: .leading, spacing: 2) {
                 Text(model.accountName).font(.headline).lineLimit(1)
-                Text(model.statusText).font(.caption.weight(.medium)).foregroundStyle(model.statusTint)
+                HStack(spacing: 5) {
+                    PresenceBird(presence: model.presence, size: 15, decorative: true)
+                    Text(model.statusText).font(.caption.weight(.medium)).foregroundStyle(model.statusTint)
+                }
             }
             Spacer()
             Menu {
                 PresenceMenuItems(model: model, navigator: nil)
             } label: {
-                Text(model.connection.isConnected ? "Status" : "Connect")
+                Label {
+                    Text(model.connection.isConnected ? "Status" : "Connect")
+                } icon: {
+                    Image(nsImage: BirdGlyph.image(BirdState(presence: model.presence)))
+                }
+                .labelStyle(.titleAndIcon)
             }
             .menuStyle(.button)
             .controlSize(.small)
             .fixedSize()
             .disabled(model.settings.username.isEmpty)
+            .help(model.connection.isConnected ? "Choose Available or Away" : "Connect to Soulseek")
+            .accessibilityLabel(model.connection.isConnected ? "Status, \(model.statusText)" : "Connect")
         }
     }
 

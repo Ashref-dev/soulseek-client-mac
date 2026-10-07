@@ -96,10 +96,10 @@ struct PresenceMenuItems: View {
     var body: some View {
         if model.connection.isConnected {
             Toggle(isOn: Binding(get: { model.presence == .available }, set: { if $0 { Task { await model.setAway(false) } } })) {
-                Label("Available", systemImage: "circle.fill")
+                Label { Text("Available") } icon: { Image(nsImage: BirdGlyph.image(BirdState(presence: .available))) }
             }
             Toggle(isOn: Binding(get: { model.presence == .away }, set: { if $0 { Task { await model.setAway(true) } } })) {
-                Label("Away", systemImage: "moon.fill")
+                Label { Text("Away") } icon: { Image(nsImage: BirdGlyph.image(BirdState(presence: .away))) }
             }
             Divider()
             Button("Disconnect") { Task { await model.disconnect() } }
