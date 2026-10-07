@@ -40,6 +40,7 @@ public final class AppModel {
     public var error: String?
     public var diagnostics: [String] = []
     public internal(set) var diagnosticStore = DiagnosticStore()
+    public var settingsTab: SettingsTab = .account
     public internal(set) var reconnectSchedule = ReconnectSchedule()
     public var userDescriptions: [String: String] = [:]
     public var userPictures: [String: Data] = [:]

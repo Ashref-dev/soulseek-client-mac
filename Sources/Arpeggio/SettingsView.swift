@@ -452,6 +452,7 @@ private struct AdvancedSettings: View {
 
     var body: some View {
         Form {
+            if model.settingsRecovery != nil { SettingsRecoverySection(model: model) }
             Section {
                 TextField("Server", text: $model.settings.server)
                 TextField("Server port", value: $model.settings.port, format: .number.grouping(.never))
@@ -558,6 +559,92 @@ private struct AdvancedSettings: View {
         Task {
             do { try await model.importConfiguration(from: url) } catch { model.error = "That file isn’t an Arpeggio configuration. \(error.localizedDescription)" }
         }
+    }
+}
+
+/// Explains a settings record that could not be read and offers only explicit, user-chosen recovery.
+/// Nothing is overwritten until the person imports a configuration or resets, and both keep a backup.
+struct SettingsRecoverySection: View {
+    let model: AppModel
+    @State private var confirmReset = false
+    @State private var status: String?
+
+    var body: some View {
+        Section {
+            Label {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Saved settings need attention").font(.headline)
+                    Text(model.settingsRecovery?.reason ?? "")
+                        .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    Text("Arpeggio is not signing in and will not save over the original settings until you choose an option below.")
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+            } icon: {
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+            }
+            HStack {
+                Button("Save a Copy…") { saveCopy() }
+                    .help("Save the unreadable settings exactly as they are, for support or manual repair")
+                Button("Import Configuration…") { importConfiguration() }
+                    .help("Replace the unreadable settings with an exported Arpeggio configuration. A backup is kept.")
+                Spacer()
+                Button("Reset Settings…", role: .destructive) { confirmReset = true }
+            }
+            if let status { Text(status).font(.caption).foregroundStyle(.secondary) }
+        } header: {
+            Text("Recovery")
+        }
+        .confirmationDialog("Reset settings to their defaults?", isPresented: $confirmReset) {
+            Button("Reset Settings", role: .destructive) {
+                Task {
+                    do { try await model.resetSettingsRecovery(); status = nil }
+                    catch { status = "Couldn’t reset settings. \(error.localizedDescription)" }
+                }
+            }
+        } message: {
+            Text("A backup of the unreadable settings is kept. Downloads, transfer history, statistics and your saved password are not affected. New settings use listening port \(String(AppSettings().listeningPort)); set your previous port again in Network if your router forwards a different one.")
+        }
+    }
+
+    private func saveCopy() {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "Arpeggio Settings Backup.json"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task {
+            do { try await model.backupSettingsRecovery(to: url); status = "Saved a copy to \(url.lastPathComponent)." }
+            catch { status = "Couldn’t save the copy. \(error.localizedDescription)" }
+        }
+    }
+
+    private func importConfiguration() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task {
+            do { try await model.importConfiguration(from: url); status = nil }
+            catch { status = "That file isn’t a valid Arpeggio configuration. \(error.localizedDescription)" }
+        }
+    }
+}
+
+/// Opens Settings on a specific tab, for deep links from banners, errors and other settings.
+struct SettingsDestinationLink<Label: View>: View {
+    let tab: SettingsTab
+    let model: AppModel
+    @ViewBuilder let label: () -> Label
+    @Environment(\.openSettings) private var openSettings
+
+    init(destination: SettingsDestination, model: AppModel, @ViewBuilder label: @escaping () -> Label) {
+        self.init(tab: destination.tab, model: model, label: label)
+    }
+
+    init(tab: SettingsTab, model: AppModel, @ViewBuilder label: @escaping () -> Label) {
+        self.tab = tab; self.model = model; self.label = label
+    }
+
+    var body: some View {
+        Button { model.settingsTab = tab; openSettings() } label: { label() }
+            .buttonStyle(.link)
     }
 }
 
