@@ -57,6 +57,7 @@ public final class AppModel {
     public internal(set) var receivedSearches: [ReceivedSearch] = []
     public internal(set) var receivedSearchTotal = 0
     public internal(set) var portMapping = PortMappingStatus.idle
+    var boundListener: (generation: UInt64, port: UInt16)?
     public internal(set) var update: UpdateState = .idle
     public internal(set) var menuBarExtraVisible = true
     public let playback = Playback()
@@ -286,7 +287,7 @@ public final class AppModel {
         if settings.isLocalServer { stopNetworkMonitoring() } else { startNetworkMonitoring() }
         error = nil
         loginRevision &+= 1; let revision = loginRevision
-        activeSessionGeneration = nil
+        activeSessionGeneration = nil; boundListener = nil
         let configuration = settings
         let credentialGeneration = await credentials.generation
         guard revision == loginRevision, !shuttingDown else { return }
@@ -303,9 +304,11 @@ public final class AppModel {
                 await disconnect(); error = "Account settings changed while signing in. Please reconnect."; return
             }
             let generation = await session.currentGeneration()
+            let bound = await session.listeningPort(generation: generation)
             guard revision == loginRevision, !shuttingDown else { return }
             activeAccount = configuration.username; reconnectAllowed = true
             activeSessionGeneration = generation
+            boundListener = bound.map { (generation, $0) }
             cancelReconnect(reset: true)
             if remember {
                 do { try await credentials.save(password: password, for: configuration.username, ifGeneration: credentialGeneration) }
@@ -373,7 +376,7 @@ public final class AppModel {
         stopNetworkMonitoring()
         intentionallyOffline = true; reconnectAllowed = false; cancelReconnect(reset: true)
         loginRevision &+= 1
-        activeSessionGeneration = nil
+        activeSessionGeneration = nil; boundListener = nil
         cancelExternalPortCheck()
         await sharingPolicy.reset()
         intentionallyOffline = true; reconnectAllowed = false

@@ -19,6 +19,14 @@ extension AppModel {
             : "No local TCP connection succeeded on \(port). Connect Arpeggio first and check the listening port. External reachability remains unverified."
     }
 
+    /// The TCP port the current session generation's listener actually bound, read from the session at sign-in.
+    /// Nil when offline or superseded; never derived from the (possibly edited) configured port.
+    public var activeListeningPort: UInt16? {
+        guard !shuttingDown, connection == .connected, let bound = boundListener,
+              bound.generation == activeSessionGeneration else { return nil }
+        return bound.port
+    }
+
     /// The last external result, shown only while it still describes the configured port on the current connection.
     public var currentExternalPortCheck: ExternalPortCheck? {
         guard let check = externalPortCheck, !shuttingDown, connection == .connected,
