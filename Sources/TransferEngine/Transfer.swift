@@ -22,6 +22,7 @@ public struct Transfer: Codable, Sendable, Identifiable {
     public var token: UInt32?
     public var preview: Bool?
     public var bytesMoved: UInt64?
+    public var accountingPeakSpeed: Double?
     public var isPreview: Bool { preview == true }
     public var progress: Double { file.size == 0 ? (status == .completed ? 1 : 0) : min(1, Double(transferred) / Double(file.size)) }
     public var eta: Double? { speed > 0 ? Double(file.size - min(transferred, file.size)) / speed : nil }

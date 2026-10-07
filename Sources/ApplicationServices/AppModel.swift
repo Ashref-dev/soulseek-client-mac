@@ -175,7 +175,7 @@ public final class AppModel {
                 guard let self else { return }
                 let previous = Set(self.transfers.filter { $0.status == .completed }.map(\.id))
                 self.transfers = transfers
-                self.ingestStatistics(transfers)
+                await self.ingestStatistics(transfers)
                 self.indexDownloads(transfers)
                 self.playback.refresh(transfers)
                 self.refreshDocumentPreview(transfers)

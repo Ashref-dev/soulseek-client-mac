@@ -3,6 +3,7 @@ import SoulseekCore
 
 extension TransferEngine {
     func download(_ id: String, connection: FramedConnection, attempt: UUID) async throws {
+        try requireAccountingInitialization()
         defer {
             connection.socket.cancel()
             if sockets[id] === connection.socket { sockets.removeValue(forKey: id) }
@@ -10,6 +11,7 @@ extension TransferEngine {
         }
         guard attempts[id] == attempt, connected else { connection.socket.cancel(); throw CancellationError() }
         guard let item = transfers.first(where: { $0.id == id }), let partialPath = item.partial, let destinationPath = item.destination else { throw FileSafetyError.unsafePath }
+        guard !partialConflicts.contains(id), partialOwner(partialPath, excluding: id) == nil else { throw FileSafetyError.unsafePath }
         let partial = URL(fileURLWithPath: partialPath)
         let destination = URL(fileURLWithPath: destinationPath)
         guard partial.resolvingSymlinksInPath().path == partial.path else { throw FileSafetyError.symbolicLink }
@@ -36,6 +38,7 @@ extension TransferEngine {
             try requireAttempt(id, attempt: attempt)
             try handle.write(contentsOf: bytes)
             received += UInt64(bytes.count)
+            recordStreamBytes(id, bytes: received)
             try await throttle(bytes: received - offset, since: started, upload: false)
             try requireAttempt(id, attempt: attempt)
             let elapsed = lastUpdate.duration(to: .now).seconds
@@ -50,6 +53,7 @@ extension TransferEngine {
         await complete(id, bytes: received, attempt: attempt, destination: published.path)
     }
     func upload(_ id: String, connection: FramedConnection, attempt: UUID) async throws {
+        try requireAccountingInitialization()
         defer {
             connection.socket.cancel()
             if sockets[id] === connection.socket { sockets.removeValue(forKey: id) }
@@ -77,6 +81,7 @@ extension TransferEngine {
             try await connection.socket.send(data)
             try requireAttempt(id, attempt: attempt)
             sent += UInt64(data.count)
+            recordStreamBytes(id, bytes: sent)
             try await throttle(bytes: sent - offset, since: started, upload: true)
             try requireAttempt(id, attempt: attempt)
             let elapsed = lastUpdate.duration(to: .now).seconds
@@ -91,29 +96,37 @@ extension TransferEngine {
     }
     func requireAttempt(_ id: String, attempt: UUID) throws {
         try Task.checkCancellation()
-        guard connected, attempts[id] == attempt else { throw CancellationError() }
+        guard !accountingBlocked, connected, attempts[id] == attempt else { throw CancellationError() }
     }
     func progress(_ id: String, bytes: UInt64, speed: Double, attempt: UUID) async {
-        guard attempts[id] == attempt, let index = transfers.firstIndex(where: { $0.id == id }), ![.paused, .cancelled].contains(transfers[index].status) else { return }
+        guard !accountingBlocked, attempts[id] == attempt, let index = transfers.firstIndex(where: { $0.id == id }), ![.paused, .cancelled].contains(transfers[index].status) else { return }
         transfers[index].status = .transferring; transfers[index].transferred = bytes; transfers[index].speed = speed
+        transfers[index].accountingPeakSpeed = max(speed, transfers[index].accountingPeakSpeed ?? 0)
         recordMoved(index, bytes: bytes)
-        publish()
+        scheduleCheckpoint(id); publishProgress()
+    }
+    func recordStreamBytes(_ id: String, bytes: UInt64) {
+        guard !accountingBlocked else { return }
+        guard let index = transfers.firstIndex(where: { $0.id == id }) else { return }
+        transfers[index].transferred = bytes; recordMoved(index, bytes: bytes); scheduleCheckpoint(id)
     }
     func startAttempt(_ id: String, offset: UInt64) {
+        guard !accountingBlocked else { return }
         let moved = transfers.first(where: { $0.id == id })?.bytesMoved ?? 0
         attemptBase[id] = (moved, offset)
     }
     func recordMoved(_ index: Int, bytes: UInt64) {
+        guard !accountingBlocked else { return }
         guard let base = attemptBase[transfers[index].id], bytes >= base.offset else { return }
         transfers[index].bytesMoved = base.moved + (bytes - base.offset)
     }
     func complete(_ id: String, bytes: UInt64, attempt: UUID, destination: String? = nil) async {
-        guard attempts[id] == attempt, let index = transfers.firstIndex(where: { $0.id == id }), transfers[index].status == .transferring else { return }
+        guard !accountingBlocked, attempts[id] == attempt, let index = transfers.firstIndex(where: { $0.id == id }), transfers[index].status == .transferring else { return }
         if let destination { transfers[index].destination = destination }
         transfers[index].status = .completed; transfers[index].transferred = bytes; transfers[index].speed = 0
         recordMoved(index, bytes: bytes); attemptBase.removeValue(forKey: id)
         let downloadFinished = !transfers[index].upload
-        attempts.removeValue(forKey: id); tasks.removeValue(forKey: id); await save(transfers[index]); publish()
+        attempts.removeValue(forKey: id); await save(transfers[index]); publish()
         if downloadFinished {
             for waiting in transfers.indices where remoteQueued.contains(transfers[waiting].id) && transfers[waiting].token == nil && transfers[waiting].status == .negotiating {
                 remoteQueued.remove(transfers[waiting].id); transfers[waiting].status = .queued

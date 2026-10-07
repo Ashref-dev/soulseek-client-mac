@@ -109,24 +109,17 @@ extension AppModel {
 
     public func clearReceivedSearches() { receivedSearches = []; receivedBuffer = [] }
 
-    func ingestStatistics(_ transfers: [Transfer]) {
-        if statistics.ingest(transfers, seen: &statisticsSeen, baseline: !statisticsBaselined) { statisticsDirty = true }
-        statisticsBaselined = true
+    func ingestStatistics(_ transfers: [Transfer]) async {
+        do {
+            if let totals = try await database.get(TransferStatistics.self, collection: "statistics", id: "main") { statistics = totals }
+        } catch { log("storage error: Saved statistics are unavailable; existing totals have been preserved.") }
     }
 
     func loadStatistics(history: [Transfer]) async {
-        if let saved = try? await database.all(TransferStatistics.self, collection: "statistics").first {
-            statistics = saved
-        } else {
-            statistics = TransferStatistics.seeded(from: history)
-            statisticsDirty = true
-            await saveStatistics()
-        }
+        await ingestStatistics(history)
     }
 
     func saveStatistics() async {
-        guard statisticsDirty else { return }
-        statisticsDirty = false
-        do { try await database.put(statistics, collection: "statistics", id: "main") } catch { log(error.localizedDescription) }
+        await ingestStatistics(transfers)
     }
 }
