@@ -374,15 +374,6 @@ private struct AdvancedSettings: View {
     @Bindable var model: AppModel
     @State private var confirmClearHistory = false
 
-    private var log: String { model.diagnostics.joined(separator: "\n") }
-    private var displayLog: String {
-        var runs: [(line: String, count: Int)] = []
-        for line in model.diagnostics {
-            if let last = runs.last, last.line == line { runs[runs.count - 1].count += 1 } else { runs.append((line, 1)) }
-        }
-        return runs.map { $0.count > 1 ? "\($0.line)  (×\($0.count))" : $0.line }.joined(separator: "\n")
-    }
-
     var body: some View {
         Form {
             if model.settingsRecovery != nil { SettingsRecoverySection(model: model) }
@@ -433,45 +424,10 @@ private struct AdvancedSettings: View {
                     Button("Show Welcome Again") { model.settings.onboardingVersion = nil }
                 }
             }
-            Section {
-                Group {
-                    if model.diagnostics.isEmpty {
-                        Text("No diagnostic messages yet.")
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, minHeight: 60)
-                    } else {
-                        ScrollView {
-                            Text(displayLog)
-                                .font(.caption.monospaced())
-                                .foregroundStyle(.secondary)
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .defaultScrollAnchor(.bottom)
-                        .frame(height: 150)
-                        .accessibilityLabel("Diagnostic log, \(model.diagnostics.count) entries")
-                    }
-                }
-                HStack {
-                    Text("\(model.diagnostics.count) of 200 recent entries").font(.caption).foregroundStyle(.secondary)
-                    Spacer()
-                    Button("Copy") {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(log, forType: .string)
-                    }
-                    Button("Clear") { model.diagnostics.removeAll() }
-                }
-                .disabled(model.diagnostics.isEmpty)
-                .controlSize(.small)
-            } header: {
-                Text("Diagnostics")
-            } footer: {
-                Text("Protocol and peer messages useful when reporting problems. Review before sharing.")
-                    .foregroundStyle(.secondary)
-            }
+            DiagnosticsSection(model: model)
         }
         .formStyle(.grouped)
-        .frame(height: 640)
+        .frame(height: 680)
         .confirmationDialog("Clear all \(model.history.count) recent searches?", isPresented: $confirmClearHistory) {
             Button("Clear History", role: .destructive) { Task { await model.clearSearchHistory() } }
         }
