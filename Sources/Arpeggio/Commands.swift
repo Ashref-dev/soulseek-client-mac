@@ -61,6 +61,7 @@ struct ArpeggioCommands: Commands {
     @Environment(\.openWindow) private var openWindow
 
     private var connected: Bool { model?.connection.isConnected ?? false }
+    private var outlineSection: Bool { [.search, .downloads, .uploads].contains(navigator?.section) }
 
     var body: some Commands {
         CommandGroup(replacing: .appInfo) {
@@ -101,12 +102,12 @@ struct ArpeggioCommands: Commands {
             Button("Sign Out…") { navigator?.confirmSignOut = true }
                 .disabled(navigator == nil || model?.settings.username.isEmpty != false)
             Divider()
-            Button("Expand All Results") { navigator?.expandAllRequest += 1 }
-                .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
-                .disabled(navigator?.section != .search)
-            Button("Collapse All Results") { navigator?.collapseAllRequest += 1 }
-                .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
-                .disabled(navigator?.section != .search)
+            Button(navigator?.section == .search ? "Expand All Results" : "Expand All Groups") { navigator?.expandAllRequest += 1 }
+                .keyboardShortcut(.expandAll)
+                .disabled(!outlineSection)
+            Button(navigator?.section == .search ? "Collapse All Results" : "Collapse All Groups") { navigator?.collapseAllRequest += 1 }
+                .keyboardShortcut(.collapseAll)
+                .disabled(!outlineSection)
             Button("Clear Search") { model?.clearSearch() }
                 .keyboardShortcut(.clearSearch)
                 .disabled(navigator?.section != .search || (model?.results.isEmpty != false && model?.query.isEmpty != false))

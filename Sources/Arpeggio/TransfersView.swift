@@ -42,17 +42,7 @@ extension TransferStatus {
 extension Transfer {
     var name: String { file.name }
     var size: UInt64 { file.size }
-    var statusRank: Int {
-        switch status {
-        case .transferring: 0
-        case .negotiating: 1
-        case .queued: 2
-        case .paused: 3
-        case .failed: 4
-        case .completed: 5
-        case .cancelled: 6
-        }
-    }
+    var statusRank: Int { TransferTree.rank(status) }
     var localURL: URL? {
         guard let path = status == .completed ? destination : (partial ?? destination) else { return nil }
         let url = URL(fileURLWithPath: path)
@@ -60,90 +50,129 @@ extension Transfer {
     }
 }
 
-/// Transfers from one user's remote folder, presented like a release (album) with aggregate progress.
-struct TransferRelease: Identifiable {
-    let id: String
-    let user: String
-    let folder: String
-    var items: [Transfer]
+/// Removal is list housekeeping: it never deletes downloaded files, partial data or shared sources.
+enum TransferRemoval {
+    static func needsConfirmation(_ transfers: [Transfer]) -> Bool { transfers.contains { !$0.status.isFinished } }
+    static func activeCount(_ transfers: [Transfer]) -> Int { transfers.filter(\.status.isActive).count }
 
-    var title: String { folder.split(separator: "\\").last.map(String.init) ?? (folder.isEmpty ? "Loose Files" : folder) }
-    var context: String? { folder.split(separator: "\\").dropLast().last.map(String.init) }
-    var totalBytes: UInt64 { items.reduce(0) { $0 + $1.size } }
-    var doneBytes: UInt64 { items.reduce(0) { $0 + ($1.status == .completed ? $1.size : min($1.transferred, $1.size)) } }
-    var speed: Double { items.filter { $0.status == .transferring }.reduce(0) { $0 + $1.speed } }
-    var progress: Double { totalBytes == 0 ? (isFinished ? 1 : 0) : Double(doneBytes) / Double(totalBytes) }
-    var completed: Int { items.filter { $0.status == .completed }.count }
-    var failed: Int { items.filter { $0.status == .failed }.count }
-    var isFinished: Bool { items.allSatisfy(\.status.isFinished) }
-    var isTransferring: Bool { items.contains { $0.status == .transferring } }
-    var rank: Int { items.map(\.statusRank).min() ?? 9 }
-    var latest: Date { items.map(\.date).max() ?? .distantPast }
-    var eta: Double? {
-        let remaining = items.filter { !$0.status.isFinished }.reduce(UInt64(0)) { $0 + $1.size - min($1.transferred, $1.size) }
-        return speed > 0 ? Double(remaining) / speed : nil
+    static func title(_ transfers: [Transfer]) -> String {
+        let noun = transfers.count == 1 ? "transfer" : "\(transfers.count) transfers"
+        return activeCount(transfers) > 0 ? "Stop and remove \(noun) from the list?" : "Remove \(noun) from the list?"
     }
 
-    static func group(_ transfers: [Transfer]) -> [TransferRelease] {
-        var order: [String] = []
-        var map: [String: TransferRelease] = [:]
-        for transfer in transfers {
-            let key = transfer.user + "\0" + transfer.file.folder
-            if map[key] == nil {
-                order.append(key)
-                map[key] = TransferRelease(id: key, user: transfer.user, folder: transfer.file.folder, items: [])
-            }
-            map[key]?.items.append(transfer)
-        }
-        return order.compactMap { map[$0] }.sorted { ($0.isFinished ? 1 : 0, $0.rank, $1.latest) < ($1.isFinished ? 1 : 0, $1.rank, $0.latest) }
+    static func message(_ transfers: [Transfer], upload: Bool) -> String {
+        let active = activeCount(transfers)
+        let stopping = active == 0 ? "" : active == 1 ? "1 is still in progress and stops first. " : "\(active) are still in progress and stop first. "
+        let files = upload ? "Your shared files are not touched." : "Files on this Mac, including partly downloaded ones, are not deleted."
+        return stopping + files + " Statistics totals stay the same."
     }
+
+    static func confirmTitle(_ transfers: [Transfer]) -> String { activeCount(transfers) > 0 ? "Stop and Remove" : "Remove from List" }
 }
 
 struct TransfersView: View {
     let model: AppModel
     let navigator: Navigator
     let upload: Bool
-    @State private var selection = Set<Transfer.ID>()
+    @AppStorage private var storedLayout: String
+    @State private var selection = Set<TransferNodeID>()
+    @State private var collapsed = Set<TransferNodeID>()
     @State private var preview: URL?
     @State private var filter = ""
+    @State private var missingFiles = Set<String>()
+    @State private var pendingRemoval: [Transfer] = []
+    @State private var confirmRemoval = false
+    /// Nested outline rows only honour their initial expansion once the table exists, so rows open after first appearance.
+    @State private var outlineReady = false
 
+    init(model: AppModel, navigator: Navigator, upload: Bool) {
+        self.model = model; self.navigator = navigator; self.upload = upload
+        _storedLayout = AppStorage(wrappedValue: TransferLayout.fallback.rawValue, TransferLayout.preferenceKey(upload: upload))
+    }
+
+    private var layout: TransferLayout { TransferLayout(stored: storedLayout) }
     private var items: [Transfer] {
         model.transfers
             .filter { $0.upload == upload && !$0.isPreview }
             .filter { filter.isEmpty || $0.file.path.localizedCaseInsensitiveContains(filter) || $0.user.localizedCaseInsensitiveContains(filter) }
             .sorted { $0.file.path.localizedStandardCompare($1.file.path) == .orderedAscending }
     }
-    private var selected: [Transfer] { model.transfers.filter { selection.contains($0.id) } }
     private var engine: TransferEngine { model.transferEngine }
+    private var suspended: Bool { upload ? model.uploadsSuspended : model.downloadsSuspended }
+    private var context: TransferQueueContext {
+        TransferQueueContext.make(model.transfers, upload: upload, connected: model.connection.isConnected, suspended: suspended,
+                                  slots: upload ? model.settings.uploadSlots : model.settings.downloadSlots)
+    }
 
     var body: some View {
         let rows = items
+        let tree = TransferTree.make(rows, layout: layout)
+        let context = context
+        let selected = tree.transfers(for: selection)
         VStack(spacing: 0) {
             OfflineNotice(model: model, navigator: navigator)
-            Group { if rows.isEmpty { emptyState } else { table(rows) } }.frame(maxWidth: .infinity, maxHeight: .infinity)
+            TransferQueueNotice(banner: TransferQueueBanner.make(model.transfers, context: context), upload: upload,
+                                connected: model.connection.isConnected) {
+                Task { await model.setTransfersSuspended(upload: upload, false) }
+            }
+            Group { if rows.isEmpty { emptyState } else { table(tree, context: context, selected: selected) } }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             Divider()
             summary(rows)
         }
         .navigationTitle(upload ? "Uploads" : "Downloads")
         .searchable(text: $filter, placement: .toolbar, prompt: "Filter transfers")
         .quickLookPreview($preview)
-        .toolbar {
-            ToolbarItemGroup {
-                if !upload {
-                    Button("Resume", systemImage: "play.fill") { act(selected, .resume) }
-                        .disabled(!selected.contains { [.paused, .failed, .cancelled].contains($0.status) })
-                    Button("Pause", systemImage: "pause.fill") { act(selected, .pause) }
-                        .disabled(!selected.contains { $0.status.isActive })
+        .toolbar { toolbar(tree, selected: selected) }
+        .task(id: CompletedSignature(rows)) { await refreshMissingFiles(rows) }
+        .onChange(of: navigator.expandAllRequest) { if navigator.section == section { expandAll() } }
+        .onChange(of: navigator.collapseAllRequest) { if navigator.section == section { collapseAll(tree) } }
+        .confirmationDialog(TransferRemoval.title(pendingRemoval), isPresented: $confirmRemoval, titleVisibility: .visible) {
+            Button(TransferRemoval.confirmTitle(pendingRemoval), role: .destructive) { remove(pendingRemoval) }
+            Button("Keep in List", role: .cancel) { pendingRemoval = [] }
+        } message: {
+            Text(TransferRemoval.message(pendingRemoval, upload: upload))
+        }
+    }
+
+    private var section: SidebarSection { upload ? .uploads : .downloads }
+
+    @ToolbarContentBuilder private func toolbar(_ tree: TransferTree, selected: [Transfer]) -> some ToolbarContent {
+        ToolbarItem {
+            Menu {
+                Picker("Layout", selection: Binding(get: { layout }, set: { storedLayout = $0.rawValue })) {
+                    ForEach(TransferLayout.allCases) { option in
+                        Label(option.title, systemImage: option.symbol).tag(option)
+                    }
                 }
-                Button("Cancel", systemImage: "xmark") { act(selected, .cancel) }
-                    .disabled(!selected.contains { !$0.status.isFinished })
-                Button("Clear Completed", systemImage: "checkmark.circle.badge.xmark") { Task { await engine.clearFinished(upload: upload) } }
-                    .disabled(!model.transfers.contains { $0.upload == upload && !$0.isPreview && $0.status.isFinished })
-                    .help(upload ? "Remove finished uploads from this list" : "Remove finished downloads from this list. Files stay in your download folder.")
-                Button("Clear Failed", systemImage: "exclamationmark.triangle") { Task { await engine.clearFailed(upload: upload) } }
-                    .disabled(!model.transfers.contains { $0.upload == upload && !$0.isPreview && $0.status == .failed })
-                    .help("Remove failed transfers from this list")
+                .pickerStyle(.inline)
+                Divider()
+                Button("Expand All") { expandAll() }.disabled(!layout.hasGroups)
+                Button("Collapse All") { collapseAll(tree) }.disabled(!layout.hasGroups)
+            } label: {
+                Label("Layout: \(layout.title)", systemImage: layout.symbol)
             }
+            .help("Show \(upload ? "uploads" : "downloads") flat, by folder, or by person then folder")
+            .accessibilityLabel("Layout, \(layout.title)")
+        }
+        ToolbarItemGroup {
+            if !upload {
+                Button("Resume", systemImage: "play.fill") { act(selected, .resume) }
+                    .disabled(!selected.contains(where: TransferExplanation.allowsManualRetry))
+                Button("Pause", systemImage: "pause.fill") { act(selected, .pause) }
+                    .disabled(!selected.contains { $0.status.isActive })
+            }
+            Button("Cancel", systemImage: "xmark") { act(selected, .cancel) }
+                .disabled(!selected.contains { !$0.status.isFinished })
+            Button("Remove from List", systemImage: "minus.circle") { requestRemoval(selected) }
+                .disabled(selected.isEmpty)
+                .help("Remove the selected rows from this list. Files on disk are kept. (Delete)")
+            Button("Clear Completed", systemImage: "checkmark.circle.badge.xmark") { Task { await engine.clearFinished(upload: upload) } }
+                .disabled(!model.transfers.contains { $0.upload == upload && !$0.isPreview && $0.status.isFinished })
+                .help(upload ? "Remove finished uploads from this list" : "Remove finished downloads from this list. Files stay in your download folder.")
+            Button("Clear Failed", systemImage: "exclamationmark.triangle") { Task { await engine.clearFailed(upload: upload) } }
+                .disabled(!model.transfers.contains { $0.upload == upload && !$0.isPreview && $0.status == .failed })
+                .help("Remove failed transfers from this list")
         }
     }
 
@@ -174,71 +203,74 @@ struct TransfersView: View {
         }
     }
 
-    private func table(_ rows: [Transfer]) -> some View {
-        Table(of: Transfer.self, selection: $selection) {
-            TableColumn("Name") { transfer in
-                Label {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(transfer.name).lineLimit(1)
-                            .foregroundStyle(transfer.status.isFinished ? .secondary : .primary)
-                        if let error = transfer.error, transfer.status == .failed {
-                            Text(error).font(.caption).foregroundStyle(.red).lineLimit(1).help(error)
-                        }
-                    }
-                } icon: {
-                    if transfer.status == .completed && transfer.file.isAudio && transfer.localURL != nil {
-                        Button { model.play(transfer) } label: {
-                            Image(systemName: isPlaying(transfer) ? "speaker.wave.2.fill" : "play.circle.fill")
-                                .foregroundStyle(Color.arpeggio)
-                                .symbolEffect(.variableColor.iterative, options: .repeating, isActive: isPlaying(transfer))
-                        }
-                        .buttonStyle(.plain)
-                        .help("Play")
-                        .accessibilityLabel("Play \(transfer.name)")
-                    } else {
-                        Image(systemName: transfer.file.symbol).foregroundStyle(.tertiary)
-                    }
+    private func table(_ tree: TransferTree, context: TransferQueueContext, selected: [Transfer]) -> some View {
+        Table(of: TransferNode.self, selection: $selection) {
+            TableColumn("Name") { node in
+                TransferNameCell(node: node, layout: tree.layout, missing: isMissing(node.transfer), playing: isPlaying(node.transfer)) {
+                    if let transfer = node.transfer { previewTransfer(transfer) }
                 }
-                .help(transfer.file.path)
             }
             .width(min: 200, ideal: 360)
-            TableColumn("Progress") { TransferProgress(transfer: $0) }.width(min: 140, ideal: 190)
-            TableColumn("Size") { Text(Format.bytes($0.size)).monospacedDigit().foregroundStyle(.secondary) }.width(min: 56, ideal: 72)
-            TableColumn("Speed") { Text($0.status == .transferring ? Format.speed($0.speed) : "-").monospacedDigit().foregroundStyle(.secondary) }
-                .width(min: 56, ideal: 76)
-            TableColumn("Remaining") { Text($0.status == .transferring ? Format.duration($0.eta ?? 0) : "-").monospacedDigit().foregroundStyle(.secondary) }
-                .width(min: 56, ideal: 76)
+            TableColumn("Progress") { node in
+                if let transfer = node.transfer {
+                    TransferProgress(transfer: transfer, reason: TransferExplanation.reason(for: transfer, in: context, fileMissing: isMissing(transfer)), upload: upload)
+                } else {
+                    GroupProgress(summary: node.summary)
+                }
+            }
+            .width(min: 150, ideal: 210)
+            TableColumn("Size") { node in Text(Format.bytes(node.summary.totalBytes)).monospacedDigit().foregroundStyle(.secondary) }
+                .width(min: 56, ideal: 72)
+            TableColumn("Speed") { node in
+                Text(node.summary.speed > 0 ? Format.speed(node.summary.speed) : "-").monospacedDigit().foregroundStyle(.secondary)
+            }
+            .width(min: 56, ideal: 76)
+            TableColumn("Remaining") { node in
+                Text(node.summary.eta.map(Format.duration) ?? "-").monospacedDigit().foregroundStyle(.secondary)
+            }
+            .width(min: 56, ideal: 76)
         } rows: {
-            ForEach(TransferRelease.group(rows)) { release in
-                Section {
-                    ForEach(release.items) { TableRow($0) }
-                } header: {
-                    ReleaseHeader(release: release, upload: upload) { action in
-                        act(release.items, action)
-                    } reveal: {
-                        NSWorkspace.shared.activateFileViewerSelecting(release.items.compactMap(\.localURL))
+            ForEach(tree.roots) { root in
+                if let children = root.children {
+                    DisclosureTableRow(root, isExpanded: expansion(root.id)) {
+                        ForEach(children) { child in
+                            if let files = child.children {
+                                DisclosureTableRow(child, isExpanded: expansion(child.id)) {
+                                    ForEach(files) { TableRow($0) }
+                                }
+                            } else {
+                                TableRow(child)
+                            }
+                        }
                     }
+                } else {
+                    TableRow(root)
                 }
             }
         }
-        .contextMenu(forSelectionType: Transfer.ID.self) { ids in
-            menu(model.transfers.filter { ids.contains($0.id) })
+        .contextMenu(forSelectionType: TransferNodeID.self) { ids in
+            menu(tree.transfers(for: ids))
         } primaryAction: { ids in
-            guard let transfer = model.transfers.first(where: { ids.contains($0.id) }) else { return }
-            if transfer.status == .completed, transfer.file.isAudio, transfer.localURL != nil { model.play(transfer) }
-            else if let url = transfer.localURL { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+            primary(ids, tree: tree)
         }
+        .onDeleteCommand { requestRemoval(selected) }
         .onKeyPress(.space) {
             guard let transfer = selected.first, PreviewFormat.classify(transfer.file.name) != nil else { return .ignored }
             previewTransfer(transfer)
             return .handled
         }
+        .onChange(of: tree.leaves.count) { pruneSelection(tree) }
+        .task {
+            guard !outlineReady else { return }
+            var transaction = Transaction(); transaction.disablesAnimations = true
+            withTransaction(transaction) { outlineReady = true }
+        }
     }
 
     @ViewBuilder private func menu(_ transfers: [Transfer]) -> some View {
         if !upload {
-            Button("Resume") { act(transfers, .resume) }
-                .disabled(!transfers.contains { [.paused, .failed, .cancelled].contains($0.status) })
+            Button(transfers.contains { $0.status == .failed } ? "Retry" : "Resume") { act(transfers, .resume) }
+                .disabled(!transfers.contains(where: TransferExplanation.allowsManualRetry))
             Button("Pause") { act(transfers, .pause) }
                 .disabled(!transfers.contains { $0.status.isActive })
         }
@@ -248,6 +280,7 @@ struct TransfersView: View {
         let urls = transfers.compactMap(\.localURL)
         if let playable = transfers.first(where: { PreviewFormat.classify($0.file.name) != nil }) {
             Button("Preview", systemImage: "play.fill") { previewTransfer(playable) }
+                .disabled(isMissing(playable) || (playable.status != .completed && upload))
         }
         Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting(urls) }
             .disabled(urls.isEmpty)
@@ -257,6 +290,9 @@ struct TransfersView: View {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(transfers.map(\.file.path).joined(separator: "\n"), forType: .string)
         }
+        Divider()
+        Button(transfers.count > 1 ? "Remove \(transfers.count) from List…" : "Remove from List…") { requestRemoval(transfers) }
+            .disabled(transfers.isEmpty)
         if let user = Set(transfers.map(\.user)).first, Set(transfers.map(\.user)).count == 1 {
             Divider()
             Button("Browse \(user)’s Files") { navigator.browse(user, model: model) }
@@ -265,13 +301,93 @@ struct TransfersView: View {
         }
     }
 
-    private func isPlaying(_ transfer: Transfer) -> Bool {
-        model.playback.isPlaying && model.playback.item?.fileURL?.path == transfer.destination
+    /// Return or double-click: groups expand or collapse, finished audio plays, other finished files reveal in Finder.
+    private func primary(_ ids: Set<TransferNodeID>, tree: TransferTree) {
+        let groups = ids.filter { if case .transfer = $0 { return false }; return true }
+        if !groups.isEmpty {
+            for id in groups { if collapsed.remove(id) == nil { collapsed.insert(id) } }
+            return
+        }
+        guard let transfer = tree.transfers(for: ids).first else { return }
+        guard transfer.status == .completed else {
+            if let url = transfer.localURL { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+            return
+        }
+        switch TransferLocalFiles.action(for: transfer) {
+        case .openLocal(let url):
+            missingFiles.remove(transfer.id)
+            if transfer.file.isAudio { model.previewLocal(url, title: transfer.file.name) } else { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+        case .missing: markMissing(transfer)
+        case .streamFromPeer, .unavailable: break
+        }
     }
+
+    private func expansion(_ id: TransferNodeID) -> Binding<Bool> {
+        Binding(get: { outlineReady && !collapsed.contains(id) },
+                set: { expanded in
+                    guard outlineReady else { return }
+                    if expanded { collapsed.remove(id) } else { collapsed.insert(id) }
+                })
+    }
+
+    private func expandAll() { collapsed.removeAll() }
+    private func collapseAll(_ tree: TransferTree) { collapsed = Set(tree.groupIDs) }
+
+    private func pruneSelection(_ tree: TransferTree) {
+        let valid = selection.filter(tree.contains)
+        if valid.count != selection.count { selection = valid }
+    }
+
+    private func isMissing(_ transfer: Transfer?) -> Bool { transfer.map { missingFiles.contains($0.id) } ?? false }
+
+    private func isPlaying(_ transfer: Transfer?) -> Bool {
+        guard let transfer else { return false }
+        return model.playback.isPlaying && model.playback.item?.fileURL?.path == transfer.destination
+    }
+
+    /// Play, Preview and Space re-check the file at that moment. A finished download is never fetched from the peer again.
     private func previewTransfer(_ transfer: Transfer) {
-        if transfer.status == .completed, let url = transfer.localURL { model.previewLocal(url, title: transfer.file.name) }
-        else if !upload {
+        switch TransferLocalFiles.action(for: transfer) {
+        case .openLocal(let url):
+            missingFiles.remove(transfer.id)
+            model.previewLocal(url, title: transfer.file.name)
+        case .missing:
+            markMissing(transfer)
+        case .streamFromPeer:
             Task { await model.listen(to: SearchResult(user: transfer.user, file: transfer.file, freeSlot: false, speed: 0, queue: 0)) }
+        case .unavailable:
+            break
+        }
+    }
+
+    private func markMissing(_ transfer: Transfer) {
+        missingFiles.insert(transfer.id)
+        model.notice = Notice(title: "File missing", detail: transfer.file.name, symbol: "questionmark.folder.fill")
+    }
+
+    /// Finished downloads whose file has moved or been deleted are found off the main thread and kept as rows.
+    private func refreshMissingFiles(_ rows: [Transfer]) async {
+        let finished = rows.filter { !$0.upload && $0.status == .completed }
+        let missing = await Task.detached(priority: .utility) { TransferLocalFiles.missing(finished) }.value
+        guard !Task.isCancelled, missing != missingFiles else { return }
+        missingFiles = missing
+    }
+
+    private func requestRemoval(_ transfers: [Transfer]) {
+        guard !transfers.isEmpty else { return }
+        if TransferRemoval.needsConfirmation(transfers) { pendingRemoval = transfers; confirmRemoval = true } else { remove(transfers) }
+    }
+
+    private func remove(_ transfers: [Transfer]) {
+        let ids = Set(transfers.map(\.id))
+        pendingRemoval = []
+        guard !ids.isEmpty else { return }
+        let upload = upload
+        Task {
+            guard await model.removeTransfers(ids) else { return }
+            selection = selection.filter { if case .transfer(let id) = $0 { return !ids.contains(id) }; return true }
+            model.notice = Notice(title: ids.count == 1 ? "Removed from list" : "Removed \(ids.count) from list",
+                                  detail: upload ? "Shared files were not touched" : "Files on disk were kept", symbol: "minus.circle.fill")
         }
     }
 
@@ -353,6 +469,13 @@ struct TransfersView: View {
             case .cancel: !$0.status.isFinished
             }
         }.map(\.id)
+        guard !ids.isEmpty else { return }
+        if action == .resume {
+            let retrying = transfers.filter { $0.status == .failed }.count
+            model.notice = Notice(title: retrying == ids.count ? "Retrying \(Self.count(ids.count, "download"))" : "Resuming \(Self.count(ids.count, "download"))",
+                                  detail: suspended ? "Downloads are paused. Resume Downloads to start them." : "They start as slots free up",
+                                  symbol: "arrow.clockwise.circle.fill")
+        }
         let engine = engine
         Task {
             for id in ids {
@@ -364,79 +487,195 @@ struct TransfersView: View {
             }
         }
     }
+
+    private static func count(_ value: Int, _ noun: String) -> String { value == 1 ? "1 \(noun)" : "\(value) \(noun)s" }
 }
 
 enum TransferAction { case resume, pause, cancel }
 
-/// Compact one-line section header: release title, source, aggregate progress and throughput.
-struct ReleaseHeader: View {
-    let release: TransferRelease
+/// Changes when the set of finished downloads or their saved paths changes, which is when files need checking.
+private struct CompletedSignature: Equatable {
+    let value: Int
+    init(_ rows: [Transfer]) {
+        var hasher = Hasher()
+        for row in rows where !row.upload && row.status == .completed { hasher.combine(row.id); hasher.combine(row.destination) }
+        value = hasher.finalize()
+    }
+}
+
+/// Global pause with an inline Resume, or a quiet line saying why work is waiting.
+private struct TransferQueueNotice: View {
+    let banner: TransferQueueBanner?
     let upload: Bool
-    let perform: (TransferAction) -> Void
-    let reveal: () -> Void
+    let connected: Bool
+    let resume: () -> Void
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: release.isFinished ? "checkmark.circle" : release.failed > 0 ? "exclamationmark.circle" : "square.stack")
-                .foregroundStyle(release.isFinished ? Color.secondary : release.failed > 0 ? Color.red : Color.arpeggio)
-                .accessibilityHidden(true)
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(release.title).font(.callout.weight(.semibold)).foregroundStyle(.primary).lineLimit(1)
-                Text([release.context, release.user].compactMap { $0 }.joined(separator: " · "))
-                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-            }
-            .layoutPriority(1)
-            .help(release.folder)
-            Spacer(minLength: 8)
-            if !release.isFinished {
-                ProgressView(value: release.progress)
-                    .progressViewStyle(.linear)
-                    .tint(release.isTransferring ? .arpeggio : .secondary)
-                    .frame(width: 90)
-            }
-            Text(detail).font(.caption).monospacedDigit().foregroundStyle(.secondary).lineLimit(1)
-            Menu {
-                if !upload {
-                    Button("Resume All") { perform(.resume) }
-                        .disabled(!release.items.contains { [.paused, .failed, .cancelled].contains($0.status) })
-                    Button("Pause All") { perform(.pause) }
-                        .disabled(!release.items.contains { $0.status.isActive })
+        switch banner {
+        case .paused(let waiting):
+            HStack(spacing: 10) {
+                Image(systemName: "pause.circle.fill").foregroundStyle(Color.arpeggio).accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(upload ? "Uploads are paused" : "Downloads are paused").font(.callout.weight(.semibold))
+                    Text(waiting == 0 ? "Nothing is waiting. Your status is unchanged."
+                         : "\(waiting) waiting. Partial data is kept and continues when you resume.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
-                Button("Cancel All") { perform(.cancel) }
-                    .disabled(release.isFinished)
-                Divider()
-                Button("Show in Finder", action: reveal)
-                    .disabled(!release.items.contains { $0.localURL != nil })
-            } label: {
-                Image(systemName: "ellipsis.circle")
+                Spacer()
+                Button(upload ? "Resume Uploads" : "Resume Downloads", action: resume)
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
             }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .accessibilityLabel("Actions for \(release.title)")
+            .padding(.horizontal, 14).padding(.vertical, 8)
+            .background(Color.arpeggio.opacity(0.08))
+            .overlay(alignment: .bottom) { Divider() }
+            .accessibilityElement(children: .contain)
+        case .queued(let remote, let local) where connected:
+            HStack(spacing: 8) {
+                Image(systemName: "clock").foregroundStyle(.secondary).accessibilityHidden(true)
+                Text(Self.queueLine(remote: remote, local: local, upload: upload))
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                Spacer()
+            }
+            .padding(.horizontal, 14).padding(.vertical, 5)
+            .help(upload ? "Uploads wait for one of your upload slots. Raise slots in the bar below."
+                         : "Other people's clients decide when queued requests start. Your own slots are set in the bar below.")
+            .overlay(alignment: .bottom) { Divider() }
+        default:
+            EmptyView()
         }
-        .opacity(release.isFinished ? 0.65 : 1)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(release.title) from \(release.user), \(detail)")
     }
 
-    private var detail: String {
-        let files = "\(release.completed)/\(release.items.count) files"
-        if release.isFinished { return "\(files) · \(Format.bytes(release.totalBytes))" }
-        var parts = [files, "\(Format.bytes(release.doneBytes)) of \(Format.bytes(release.totalBytes))"]
-        if release.speed > 0 { parts.append(Format.speed(release.speed)) }
-        if let eta = release.eta { parts.append(Format.duration(eta) + " left") }
-        if release.failed > 0 { parts.append("\(release.failed) failed") }
+    static func queueLine(remote: Int, local: Int, upload: Bool) -> String {
+        var parts: [String] = []
+        if remote > 0 { parts.append(upload ? "\(remote) waiting for people to accept" : "\(remote) waiting in other people’s queues") }
+        if local > 0 { parts.append("\(local) waiting for one of your \(upload ? "upload" : "download") slots") }
         return parts.joined(separator: " · ")
+    }
+}
+
+/// Name column: people and folders read as headings; files show play state, errors and missing files.
+private struct TransferNameCell: View {
+    let node: TransferNode
+    let layout: TransferLayout
+    let missing: Bool
+    let playing: Bool
+    let play: () -> Void
+
+    var body: some View {
+        switch node.kind {
+        case .user:
+            Label {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(node.title).font(.callout.weight(.semibold)).lineLimit(1)
+                    Text(files).font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                }
+            } icon: {
+                Image(systemName: "person.crop.circle").foregroundStyle(Color.arpeggio)
+            }
+            .accessibilityLabel("\(node.title), \(files)")
+        case .folder:
+            Label {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(node.title).font(.callout.weight(.semibold)).lineLimit(1)
+                    Text(folderContext).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
+                .help(node.folder.isEmpty ? "Files shared from \(node.user)’s share root" : node.folder)
+            } icon: {
+                Image(systemName: node.summary.failed > 0 ? "exclamationmark.circle" : node.summary.isFinished ? "checkmark.circle" : "folder")
+                    .foregroundStyle(node.summary.failed > 0 ? Color.red : node.summary.isFinished ? Color.secondary : Color.arpeggio)
+            }
+            .opacity(node.summary.isFinished ? 0.75 : 1)
+            .accessibilityLabel("\(node.title) from \(node.user), \(files)")
+        case .file:
+            if let transfer = node.transfer { file(transfer) }
+        }
+    }
+
+    private var files: String {
+        let summary = node.summary
+        return summary.completed == summary.files ? "\(summary.files) \(summary.files == 1 ? "file" : "files")" : "\(summary.completed)/\(summary.files) files"
+    }
+
+    private var folderContext: String {
+        let user = layout == .folders ? node.user : nil
+        return [node.context, user, files].compactMap { $0 }.joined(separator: " · ")
+    }
+
+    private func file(_ transfer: Transfer) -> some View {
+        Label {
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 6) {
+                    Text(transfer.name).lineLimit(1)
+                        .foregroundStyle(transfer.status.isFinished ? .secondary : .primary)
+                    if layout == .flat, let context = node.context {
+                        Text(context).font(.caption).foregroundStyle(.tertiary).lineLimit(1)
+                    }
+                }
+                if missing {
+                    Text("Moved or deleted outside Arpeggio").font(.caption).foregroundStyle(.orange).lineLimit(1)
+                } else if let error = transfer.error, transfer.status == .failed {
+                    Text(error).font(.caption).foregroundStyle(.red).lineLimit(1).help(error)
+                }
+            }
+        } icon: {
+            if missing {
+                Image(systemName: "questionmark.folder").foregroundStyle(.orange)
+                    .help("The downloaded file is no longer at its saved location")
+            } else if transfer.status == .completed && transfer.file.isAudio && !transfer.upload {
+                Button(action: play) {
+                    Image(systemName: playing ? "speaker.wave.2.fill" : "play.circle.fill")
+                        .foregroundStyle(Color.arpeggio)
+                        .symbolEffect(.variableColor.iterative, options: .repeating, isActive: playing)
+                }
+                .buttonStyle(.plain)
+                .help("Play")
+                .accessibilityLabel("Play \(transfer.name)")
+            } else {
+                Image(systemName: transfer.file.symbol).foregroundStyle(.tertiary)
+            }
+        }
+        .help(transfer.file.path)
+    }
+}
+
+/// Aggregate progress for a person or folder row.
+private struct GroupProgress: View {
+    let summary: TransferSummary
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if summary.isFinished {
+                Text(summary.failed > 0 ? "\(summary.failed) failed" : "Done").foregroundStyle(.secondary)
+            } else {
+                ProgressView(value: summary.progress)
+                    .progressViewStyle(.linear)
+                    .tint(summary.isTransferring ? .arpeggio : .secondary)
+                Text(summary.progress.formatted(.percent.precision(.fractionLength(0))))
+                    .font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                    .frame(width: 34, alignment: .trailing)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibility)
+    }
+
+    private var accessibility: String {
+        var parts = ["\(summary.completed) of \(summary.files) files done", "\(Int(summary.progress * 100)) percent"]
+        if summary.failed > 0 { parts.append("\(summary.failed) failed") }
+        return parts.joined(separator: ", ")
     }
 }
 
 struct TransferProgress: View {
     let transfer: Transfer
+    let reason: TransferReason
+    let upload: Bool
+
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: transfer.status.symbol)
-                .foregroundStyle(transfer.status.tint)
+            Image(systemName: symbol)
+                .foregroundStyle(tint)
                 .frame(width: 14)
                 .accessibilityHidden(true)
             if transfer.status == .transferring || (transfer.status == .paused && transfer.transferred > 0) {
@@ -447,14 +686,36 @@ struct TransferProgress: View {
                     .font(.caption).monospacedDigit().foregroundStyle(.secondary)
                     .frame(width: 34, alignment: .trailing)
             } else {
-                Text(statusText).foregroundStyle(.secondary).lineLimit(1)
+                Text(TransferExplanation.label(reason)).foregroundStyle(reason.isProblem ? AnyShapeStyle(tint) : AnyShapeStyle(.secondary)).lineLimit(1)
             }
         }
+        .help(TransferExplanation.detail(reason, upload: upload))
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(transfer.status.label), \(Int(transfer.progress * 100)) percent")
+        .accessibilityLabel("\(TransferExplanation.label(reason)), \(Int(transfer.progress * 100)) percent")
+        .accessibilityHint(TransferExplanation.detail(reason, upload: upload))
     }
-    private var statusText: String {
-        if [.queued, .negotiating].contains(transfer.status) && transfer.queuePosition > 0 { return "Queued · #\(transfer.queuePosition)" }
-        return transfer.status.label
+
+    private var symbol: String {
+        switch reason {
+        case .fileMissing: "questionmark.folder"
+        case .directionPaused: "pause.circle"
+        case .retrying: "arrow.clockwise.circle"
+        case .remoteQueue: "person.2.wave.2"
+        case .waitingForLocalSlot: "square.stack.3d.up"
+        case .offline: "bolt.horizontal.circle"
+        case .peerDeferred: "hand.raised"
+        case .waitingToStart: "clock"
+        case .storageRecovery: "externaldrive.badge.exclamationmark"
+        case .stopping: "stop.circle"
+        default: transfer.status.symbol
+        }
+    }
+
+    private var tint: Color {
+        switch reason {
+        case .fileMissing: .orange
+        case .retrying: .arpeggio
+        default: transfer.status.tint
+        }
     }
 }
