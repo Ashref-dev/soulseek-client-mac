@@ -37,6 +37,7 @@ public final class AppModel {
     public internal(set) var shareSummaries: [String: ShareRootSummary] = [:]
     public var error: String?
     public var diagnostics: [String] = []
+    public internal(set) var diagnosticStore = DiagnosticStore()
     public var userDescriptions: [String: String] = [:]
     public var userPictures: [String: Data] = [:]
     public var userStatistics: [String: UserStatistics] = [:]
@@ -227,7 +228,7 @@ public final class AppModel {
             await configureTransfers()
             if shareConfigurationNeedsScan { await rescanShares(configurationOnly: true) }
             await transferEngine.revalidateUploads()
-        } catch { self.error = error.localizedDescription }
+        } catch { self.error = error.localizedDescription; log("storage error: Could not save settings.") }
     }
     public func useSoulseekServer() async {
         settings.useSoulseekServer(); error = nil
@@ -388,7 +389,7 @@ public final class AppModel {
             }
         } catch { self.error = error.localizedDescription }
     }
-    func log(_ text: String) { diagnostics.append(text); diagnostics = Array(diagnostics.suffix(200)) }
+    func log(_ text: String) { diagnosticStore.append(.classify(text)); diagnostics.append(text); diagnostics = Array(diagnostics.suffix(200)) }
     func watchUser(_ user: String, generation: UInt64? = nil) async throws {
         var writer = WireWriter(); writer.string(user)
         try await session.send(code: 5, payload: writer.data, generation: generation)

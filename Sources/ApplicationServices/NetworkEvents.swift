@@ -9,6 +9,7 @@ extension AppModel {
         switch event {
         case .state(let state):
             connection = state
+            if case .failed(let reason) = state { log("Server failure: \(reason)") }
             await transferEngine.setConnected(state == .connected)
             if state != .connected { userStatuses = [:] }
             if case .failed = state, !intentionallyOffline, reconnectAllowed, reconnectTask == nil {
@@ -165,6 +166,11 @@ extension AppModel {
               !password.isEmpty else { return }
         connection = .reconnecting
         await login(password: password, automatic: true)
+    }
+    public func redactedCopyReport() -> String {
+        let context = DiagnosticReport.Context(connection: connection, mapping: portMapping, external: externalPortCheck,
+                                               sharedFiles: sharedCount, sharedBytes: sharedBytes)
+        return DiagnosticReport.render(entries: diagnosticStore.entries, listeningPort: settings.listeningPort, context: context)
     }
     func handlePeer(user: String, code: UInt32, payload: Data) async throws {
         var trusted = false
