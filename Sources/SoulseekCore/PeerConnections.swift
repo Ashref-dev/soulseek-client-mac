@@ -167,6 +167,7 @@ extension SoulseekSession {
                 }
             }
         } catch {
+            let requestFailed = expectedLibraries.contains(user) || expectedUserInfo.contains(user) || expectedFolders[user]?.isEmpty == false
             if !Task.isCancelled, peers[user] === connection {
                 peers.removeValue(forKey: user); peerTasks.removeValue(forKey: user)
                 peerDirections.removeValue(forKey: user); addresses.removeValue(forKey: user)
@@ -174,7 +175,10 @@ extension SoulseekSession {
                 expectedFolders.removeValue(forKey: user)
                 await emit(.peerUnavailable(user))
             }
-            if !Task.isCancelled, attempt == generation { await report("Peer messaging ended: \(error.localizedDescription)") }
+            if !Task.isCancelled, attempt == generation {
+                if case ProtocolError.disconnected = error, !requestFailed { await report("Peer messaging ended: The connection closed.") }
+                else { await report("Peer request failed: \(error.localizedDescription)") }
+            }
             connection.socket.cancel()
         }
     }
