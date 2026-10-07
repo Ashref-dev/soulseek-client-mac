@@ -12,14 +12,9 @@ extension AppModel {
             if case .failed(let reason) = state { log("Server failure: \(reason)") }
             await transferEngine.setConnected(state == .connected)
             if state != .connected { userStatuses = [:] }
+            if state == .connected { cancelReconnect(reset: true) }
             if case .failed = state, !intentionallyOffline, reconnectAllowed, reconnectTask == nil {
-                let revision = loginRevision
-                let configuration = settings
-                reconnectTask = Task { [weak self] in
-                    try? await Task.sleep(for: .seconds(15))
-                    guard let self, !Task.isCancelled, revision == self.loginRevision else { return }
-                    await self.reconnectAfterCredentialLookup(configuration: configuration, revision: revision)
-                }
+                scheduleReconnect()
             }
         case .search(let token, let incoming):
             if token == searchToken {
@@ -156,10 +151,11 @@ extension AppModel {
             try await session.peerSend(user: user, code: 41, payload: writer.data)
         }
     }
-    func reconnectAfterCredentialLookup(configuration: AppSettings, revision: UInt64) async {
+    func reconnectAfterCredentialLookup(configuration: AppSettings, revision: UInt64, owner: UInt64? = nil) async {
         let password = await savedPassword()
-        guard !Task.isCancelled, revision == loginRevision else { return }
+        guard !Task.isCancelled, revision == loginRevision, owner == nil || owner == reconnectRevision else { return }
         reconnectTask = nil
+        reconnectSchedule.cancel(reset: false)
         guard !intentionallyOffline, reconnectAllowed, !shuttingDown,
               settings.username == configuration.username, settings.server == configuration.server,
               settings.port == configuration.port, settings.listeningPort == configuration.listeningPort,
@@ -167,6 +163,47 @@ extension AppModel {
         connection = .reconnecting
         await login(password: password, automatic: true)
     }
+    func scheduleReconnect() {
+        guard !shuttingDown, !intentionallyOffline, reconnectAllowed, reconnectTask == nil else { return }
+        let revision = loginRevision; let configuration = settings
+        reconnectRevision &+= 1; let owner = reconnectRevision
+        let clock = reconnectClock
+        let delay = reconnectSchedule.schedule(at: clock.now())
+        reconnectTask = Task { [weak self] in
+            do { try await clock.sleep(delay) } catch { return }
+            guard let self, !Task.isCancelled, revision == self.loginRevision else { return }
+            await self.reconnectAfterCredentialLookup(configuration: configuration, revision: revision, owner: owner)
+        }
+    }
+    func cancelReconnect(reset: Bool) {
+        reconnectRevision &+= 1
+        reconnectTask?.cancel(); reconnectTask = nil; reconnectSchedule.cancel(reset: reset)
+    }
+    public func retryNow() async {
+        guard !Task.isCancelled, !shuttingDown, !intentionallyOffline, reconnectAllowed else { return }
+        guard case .failed = connection else { return }
+        cancelReconnect(reset: false)
+        let configuration = settings; let revision = loginRevision
+        let owner = reconnectRevision
+        let task = Task<Void, Never> { [weak self] in
+            await self?.reconnectAfterCredentialLookup(configuration: configuration, revision: revision, owner: owner)
+        }
+        reconnectTask = task
+        await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
+        if owner == reconnectRevision { reconnectTask = nil; reconnectSchedule.cancel(reset: false) }
+    }
+    func startNetworkMonitoring() {
+        guard networkMonitor == nil, !settings.isLocalServer, !shuttingDown else { return }
+        let monitor = networkMonitorFactory(); networkMonitor = monitor
+        var previouslyAvailable: Bool?
+        monitor.start { [weak self] available in
+            let returned = previouslyAvailable == false && available
+            previouslyAvailable = available
+            guard returned, let self, self.reconnectSchedule.deadline != nil else { return }
+            Task { await self.retryNow() }
+        }
+    }
+    func stopNetworkMonitoring() { networkMonitor?.stop(); networkMonitor = nil }
     public func redactedCopyReport() -> String {
         let context = DiagnosticReport.Context(connection: connection, mapping: portMapping, external: externalPortCheck,
                                                sharedFiles: sharedCount, sharedBytes: sharedBytes)

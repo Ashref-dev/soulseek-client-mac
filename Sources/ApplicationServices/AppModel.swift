@@ -40,6 +40,7 @@ public final class AppModel {
     public var error: String?
     public var diagnostics: [String] = []
     public internal(set) var diagnosticStore = DiagnosticStore()
+    public internal(set) var reconnectSchedule = ReconnectSchedule()
     public var userDescriptions: [String: String] = [:]
     public var userPictures: [String: Data] = [:]
     public var userStatistics: [String: UserStatistics] = [:]
@@ -69,6 +70,10 @@ public final class AppModel {
     @ObservationIgnored var batchTask: Task<Void, Never>?
     @ObservationIgnored var wishlistTask: Task<Void, Never>?
     @ObservationIgnored var reconnectTask: Task<Void, Never>?
+    @ObservationIgnored var reconnectRevision: UInt64 = 0
+    @ObservationIgnored var reconnectClock = ReconnectClock.live
+    @ObservationIgnored var networkMonitor: (any NetworkMonitoring)?
+    @ObservationIgnored var networkMonitorFactory: @MainActor () -> any NetworkMonitoring = { NetworkMonitor() }
     @ObservationIgnored var buffered: [SearchResult] = []
     @ObservationIgnored var resultIDs: Set<String> = []
     @ObservationIgnored var searchRevision: UInt64 = 0
@@ -247,6 +252,7 @@ public final class AppModel {
     }
     public func shutdown() async {
         guard !shuttingDown else { return }; shuttingDown = true
+        stopNetworkMonitoring(); cancelReconnect(reset: true)
         intentionallyOffline = true; loginRevision &+= 1
         reconnectTask?.cancel(); reconnectTask = nil; wishlistTask?.cancel(); wishlistTask = nil
         batchTask?.cancel(); searchStopTask?.cancel(); shareWatchTask?.cancel(); shareScanTask?.cancel()
@@ -275,6 +281,9 @@ public final class AppModel {
     }
     public func login(password: String, remember: Bool = true, automatic: Bool = false) async {
         guard !shuttingDown, settingsRecovery == nil else { return }
+        cancelReconnect(reset: !automatic)
+        if !automatic { reconnectAllowed = false }
+        if settings.isLocalServer { stopNetworkMonitoring() } else { startNetworkMonitoring() }
         error = nil
         loginRevision &+= 1; let revision = loginRevision
         activeSessionGeneration = nil
@@ -297,6 +306,7 @@ public final class AppModel {
             guard revision == loginRevision, !shuttingDown else { return }
             activeAccount = configuration.username; reconnectAllowed = true
             activeSessionGeneration = generation
+            cancelReconnect(reset: true)
             if remember {
                 do { try await credentials.save(password: password, for: configuration.username, ifGeneration: credentialGeneration) }
                 catch {
@@ -360,6 +370,8 @@ public final class AppModel {
         await saveSettings()
     }
     public func disconnect() async {
+        stopNetworkMonitoring()
+        intentionallyOffline = true; reconnectAllowed = false; cancelReconnect(reset: true)
         loginRevision &+= 1
         activeSessionGeneration = nil
         cancelExternalPortCheck()
