@@ -28,11 +28,14 @@ struct SearchView: View {
     @State private var selection = Set<ResultNodeID>()
     @State private var collapsedUsers = Set<String>()
     @State private var collapsedFolders = Set<String>()
-    @State private var hierarchy = ResultHierarchy()
     @State private var sortOrder = [KeyPathComparator(\SearchResult.slotRank), KeyPathComparator(\SearchResult.speed, order: .reverse)]
     @State private var filters = ResultFilters()
     @FocusState private var searchFocused: Bool
-    @State private var projection = SearchProjection()
+    @State private var pipeline = SearchPreparation.pipeline()
+    @State private var generation: UInt64 = 0
+
+    private var projection: SearchProjection { pipeline.output?.projection ?? SearchProjection() }
+    private var hierarchy: ResultHierarchy { pipeline.output?.hierarchy ?? ResultHierarchy() }
 
     var body: some View {
         let rows = projection.rows
@@ -64,30 +67,14 @@ struct SearchView: View {
             resetOutline()
         }
         .onChange(of: model.results.isEmpty) { _, empty in if empty { resetOutline() } }
-        .task(id: ProjectionKey(token: model.searchToken, count: 0, filters: filters, grouping: .none, sort: sortOrder)) {
-            var preparedCount = -1
-            while !Task.isCancelled {
-                if preparedCount == model.results.count {
-                    do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
-                    continue
-                }
-                let source = model.results
-                let filters = filters; let order = sortOrder
-                let work = Task.detached(priority: .userInitiated) {
-                    try Task.checkCancellation()
-                    let projection = try SearchProjection.make(source, filters: filters, order: order, grouping: .none)
-                    try Task.checkCancellation()
-                    return (projection, try ResultHierarchy.make(projection.rows))
-                }
-                do {
-                    let output = try await withTaskCancellationHandler { try await work.value } onCancel: { work.cancel() }
-                    guard !Task.isCancelled else { return }
-                    projection = output.0; hierarchy = output.1
-                    preparedCount = source.count
-                } catch is CancellationError { return }
-                catch { model.error = "Couldn’t prepare the search results. \(error.localizedDescription)"; return }
-            }
+        .onChange(of: ProjectionKey(token: model.searchToken, filters: filters, sort: sortOrder), initial: true) { old, new in
+            restartPreparation(clear: old.token != new.token)
         }
+        .onChange(of: model.results.count) { submitResults() }
+        .onChange(of: pipeline.failure) { _, failure in
+            if let failure { model.error = "Couldn’t prepare the search results. \(failure)" }
+        }
+        .onDisappear { pipeline.cancel() }
         .toolbar {
             ToolbarItemGroup {
                 if model.searching {
@@ -189,7 +176,19 @@ struct SearchView: View {
 
     private func resetOutline() {
         selection.removeAll(); collapsedUsers.removeAll(); collapsedFolders.removeAll()
-        projection = SearchProjection(); hierarchy = ResultHierarchy()
+        restartPreparation(clear: true)
+    }
+
+    /// A new search, filter or sort order starts a new generation; older preparations can no longer publish.
+    private func restartPreparation(clear: Bool) {
+        generation &+= 1
+        pipeline.reset(generation: generation, clear: clear)
+        submitResults()
+    }
+
+    /// Called only when results actually change: no polling while a search is idle.
+    private func submitResults() {
+        pipeline.submit(SearchSnapshot(results: model.results, filters: filters, order: sortOrder))
     }
 
     private func expandAll() {

@@ -4,10 +4,32 @@ import ArpeggioServices
 
 struct ProjectionKey: Equatable {
     let token: UInt32?
-    let count: Int
     let filters: ResultFilters
-    let grouping: ResultGrouping
     let sort: [KeyPathComparator<SearchResult>]
+}
+
+/// One immutable snapshot of results with the filters and order to apply.
+struct SearchSnapshot: Sendable {
+    let results: [SearchResult]
+    let filters: ResultFilters
+    let order: [KeyPathComparator<SearchResult>]
+}
+
+/// Filtered, sorted rows and the user, folder and track outline built from them, prepared off the main actor.
+struct SearchPreparation: Sendable {
+    let projection: SearchProjection
+    let hierarchy: ResultHierarchy
+
+    nonisolated static func make(_ snapshot: SearchSnapshot) throws -> Self {
+        try Task.checkCancellation()
+        let projection = try SearchProjection.make(snapshot.results, filters: snapshot.filters, order: snapshot.order, grouping: .none)
+        try Task.checkCancellation()
+        return Self(projection: projection, hierarchy: try ResultHierarchy.make(projection.rows))
+    }
+
+    @MainActor static func pipeline() -> SearchPipeline<SearchSnapshot, SearchPreparation> {
+        SearchPipeline { snapshot in try make(snapshot) }
+    }
 }
 
 struct SearchProjection: Sendable {
