@@ -38,6 +38,12 @@ public final class Playback {
     @ObservationIgnored private var feed: StreamFeed?
     @ObservationIgnored private var expectedDuration: Double = 0
     @ObservationIgnored private var metadataTask: Task<Void, Never>?
+    /// Media keys and Now Playing. Set by the app; tests leave it nil so they never touch the system centers.
+    @ObservationIgnored public var remoteCommands: RemoteCommandRouter? {
+        didSet { if item != nil { activateRemoteCommands() } else { oldValue?.deactivate() } }
+    }
+    /// How a Stop from the system ends playback; the app routes it through preview cleanup.
+    @ObservationIgnored public var remoteStop: (@MainActor () -> Void)?
 
     public init() {}
 
@@ -112,6 +118,7 @@ public final class Playback {
             tags.resolved = true
             self.artwork = decoded?.image; self.artworkPixels = decoded?.pixels
             self.metadata = tags
+            self.publishNowPlaying()
         }
     }
 
@@ -170,10 +177,13 @@ public final class Playback {
         }
         player.play()
         isPlaying = true
+        activateRemoteCommands()
     }
 
     private func tick() {
         guard let player, let current = player.currentItem else { return }
+        let before = (isPlaying, duration)
+        defer { if before != (isPlaying, duration) { publishNowPlaying() } }
         let seconds = player.currentTime().seconds
         currentTime = seconds.isFinite ? seconds : 0
         let known = current.duration.seconds
@@ -214,17 +224,31 @@ public final class Playback {
 
     public func togglePlay() {
         guard let player else { return }
-        if player.timeControlStatus == .paused {
-            if duration > 0, currentTime >= duration - 0.3 { player.seek(to: .zero) }
-            player.play(); isPlaying = true
-        } else { player.pause(); isPlaying = false }
+        if player.timeControlStatus == .paused { resume() } else { pause() }
     }
+
+    public func resume() {
+        guard let player, failure == nil else { return }
+        if duration > 0, currentTime >= duration - 0.3 { player.seek(to: .zero); currentTime = 0 }
+        player.play(); isPlaying = true
+        publishNowPlaying()
+    }
+
+    public func pause() {
+        guard let player else { return }
+        player.pause(); isPlaying = false
+        publishNowPlaying()
+    }
+
+    /// Volume steps for menu commands, clamped to 0...1.
+    public func changeVolume(by delta: Float) { volume = min(1, max(0, volume + delta)) }
 
     public func seek(toFraction fraction: Double) {
         guard let player, duration > 0 else { return }
         let target = max(0, min(1, fraction)) * duration
         currentTime = target
         player.seek(to: CMTime(seconds: target, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+        publishNowPlaying()
     }
 
     func markKept() { item?.isPreview = false }
@@ -233,9 +257,35 @@ public final class Playback {
     func stop() -> Item? {
         let previous = item
         teardown()
+        remoteCommands?.deactivate()
         item = nil; metadata = TrackMetadata(); artwork = nil; artworkPixels = nil; isPlaying = false; isWaiting = false; status = nil; failure = nil
         currentTime = 0; duration = 0; bufferedFraction = 1
         return previous
+    }
+
+    private func activateRemoteCommands() {
+        guard let remoteCommands, item != nil else { return }
+        remoteCommands.activate(RemoteCommandRouter.Handlers(
+            play: { [weak self] in self?.resume() },
+            pause: { [weak self] in self?.pause() },
+            toggle: { [weak self] in self?.togglePlay() },
+            stop: { [weak self] in
+                guard let self else { return }
+                if let remoteStop = self.remoteStop { remoteStop() } else { self.stop() }
+            },
+            skip: { [weak self] seconds in self?.skip(by: seconds) },
+            seek: { [weak self] seconds in
+                guard let self, self.duration > 0 else { return }
+                self.seek(toFraction: seconds / self.duration)
+            }))
+        publishNowPlaying()
+    }
+
+    func publishNowPlaying() {
+        guard let remoteCommands, let item else { return }
+        remoteCommands.update(NowPlayingInfo(title: metadata.title ?? (item.fileName as NSString).deletingPathExtension,
+                                             artist: metadata.artist ?? item.subtitle, album: metadata.album,
+                                             duration: duration, elapsed: currentTime, playing: isPlaying))
     }
 
     private func teardown() {

@@ -98,6 +98,25 @@ extension AppModel {
         await abandonCurrentPreview()
     }
 
+    /// Identifies the current playback selection. Every play, preview or stop starts a new one.
+    public var playbackSelection: UInt64 { playbackRevision }
+
+    /// Stops playback only if nothing new was selected since `selection` was read.
+    public func stopPlayback(ifSelection selection: UInt64) async {
+        guard selection == playbackRevision else { return }
+        await abandonCurrentPreview()
+    }
+
+    /// What a system Stop runs once the command router has accepted it. The selection is read synchronously, so a
+    /// track chosen before the stop's task runs is left playing.
+    public func remoteStopHandler() -> @MainActor () -> Void {
+        { [weak self] in
+            guard let self else { return }
+            let selection = self.playbackSelection
+            Task { await self.stopPlayback(ifSelection: selection) }
+        }
+    }
+
     func abandonCurrentPreview() async {
         let selection = reservePlaybackSelection()
         await discardAbandonedPreviews(selection.abandoned)

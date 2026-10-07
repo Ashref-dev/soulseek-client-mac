@@ -12,7 +12,10 @@ struct ArpeggioApp: App {
     init() {
         do {
             let directory = ProcessInfo.processInfo.environment["ARPEGGIO_DATA_DIRECTORY"].map { URL(fileURLWithPath: $0, isDirectory: true) }
-            _model = State(initialValue: try AppModel(dataDirectory: directory))
+            let model = try AppModel(dataDirectory: directory)
+            model.playback.remoteStop = model.remoteStopHandler()
+            model.playback.remoteCommands = RemoteCommandRouter(bridge: SystemRemoteCommandBridge())
+            _model = State(initialValue: model)
         }
         catch { _startupError = State(initialValue: error.localizedDescription) }
     }
