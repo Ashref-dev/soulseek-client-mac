@@ -18,6 +18,7 @@ public enum UpdateState: Sendable, Equatable {
 
 public enum UpdateError: Error, LocalizedError {
     case noAsset, unreadable, wrongApp, notNewer, untrusted, notWritable
+    case incompatible, unsafeArchive, timedOut, helperFailed, invalidReceipt
     public var errorDescription: String? {
         switch self {
         case .noAsset: "The release has no Arpeggio download attached."
@@ -26,15 +27,18 @@ public enum UpdateError: Error, LocalizedError {
         case .notNewer: "The downloaded update isn’t newer than this version."
         case .untrusted: "The update isn’t signed by the same developer as this copy, so it wasn’t installed."
         case .notWritable: "Arpeggio can’t replace itself in this folder. Move it to Applications and try again."
+        case .incompatible: "This update requires a different macOS version or processor. Arpeggio supports macOS 27 or later on Apple Silicon."
+        case .unsafeArchive: "The update archive exceeds safety limits or contains unsafe entries."
+        case .timedOut: "The update operation exceeded its safety deadline."
+        case .helperFailed: "The update recovery helper could not start. The installed app was not changed."
+        case .invalidReceipt: "The update startup receipt was invalid; recovery will retain the previous app."
         }
     }
 }
 
-/// Updates from GitHub Releases. A release is installed only when its code signature satisfies the
-/// designated requirement of the copy being replaced, so only builds from the same signing identity apply.
 public enum Updater {
     public static let repository = "Ashref-dev/soulseek-client-mac"
-    public static var currentVersion: String { Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0" }
+    public static var currentVersion: String { UpdateCompatibility.releaseVersion(.main) }
 
     public static func latest(session: URLSession = .shared) async throws -> Release {
         var request = URLRequest(url: URL(string: "https://api.github.com/repos/\(repository)/releases/latest")!, timeoutInterval: 20)
@@ -55,81 +59,76 @@ public enum Updater {
 
     static func parse(_ data: Data) throws -> Release {
         let payload = try JSONDecoder().decode(Payload.self, from: data)
-        let archives = payload.assets.filter { $0.name.contains("Arpeggio") && $0.name.hasSuffix(".zip") }
-        guard let asset = archives.first(where: { $0.name.hasPrefix("Soulseek-Arpeggio") }) ?? archives.first else { throw UpdateError.noAsset }
-        return Release(version: payload.tag_name.trimmingCharacters(in: CharacterSet(charactersIn: "vV")), notes: payload.body ?? "",
+        let version = payload.tag_name.hasPrefix("v") ? String(payload.tag_name.dropFirst()) : payload.tag_name
+        guard UpdateVersion(version) != nil else { throw UpdateError.notNewer }
+        let canonical = payload.assets.filter { $0.name == "Soulseek-Arpeggio-\(version).zip" }
+        let legacy = payload.assets.filter { $0.name == "Arpeggio-\(version).zip" }
+        let matches = canonical.isEmpty ? legacy : canonical
+        guard matches.count == 1, let asset = matches.first else { throw UpdateError.noAsset }
+        return Release(version: version, notes: payload.body ?? "",
                        asset: asset.browser_download_url, page: payload.html_url)
     }
 
     /// Semantic version comparison; a pre-release ("0.6.0-beta") sorts before its release.
     public static func isNewer(_ candidate: String, than current: String) -> Bool {
-        func parts(_ value: String) -> ([Int], Bool) {
-            let trimmed = value.trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
-            let core = trimmed.split(separator: "-", maxSplits: 1)
-            let numbers = core.first.map { $0.split(separator: ".").map { Int($0) ?? 0 } } ?? []
-            return ((numbers + [0, 0, 0]).prefix(3).map { $0 }, core.count > 1)
-        }
-        let (a, aPre) = parts(candidate), (b, bPre) = parts(current)
-        if a != b { return a.lexicographicallyPrecedes(b) == false }
-        return !aPre && bPre
+        guard let a = UpdateVersion(candidate), let b = UpdateVersion(current, legacy: true) else { return false }
+        return a > b
     }
 
-    /// Downloads, unpacks and verifies a release next to `current`, then swaps it in place. If the release
-    /// carries a new app name, the installed copy is renamed to match. Returns where the app now lives.
     @discardableResult
     public static func install(_ release: Release, replacing current: URL, session: URLSession = .shared) async throws -> URL {
         let parent = current.deletingLastPathComponent()
+        guard current.pathExtension == "app", current.path == current.resolvingSymlinksInPath().path else { throw UpdateError.notWritable }
         guard FileManager.default.isWritableFile(atPath: parent.path) else { throw UpdateError.notWritable }
-        let (archive, response) = try await session.download(from: release.asset)
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
         let staging = parent.appendingPathComponent(".arpeggio-update-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
-        defer { try? FileManager.default.removeItem(at: staging); try? FileManager.default.removeItem(at: archive) }
-        try await unzip(archive, into: staging)
-        let apps = try FileManager.default.contentsOfDirectory(at: staging, includingPropertiesForKeys: [.isSymbolicLinkKey]).filter { $0.pathExtension == "app" }
-        guard apps.count == 1, let app = apps.first,
-              (try? app.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true else { throw UpdateError.unreadable }
-        try verify(app, replacing: current)
-        let name = app.lastPathComponent
-        let installed = try FileManager.default.replaceItemAt(current, withItemAt: app) ?? current
-        let renamed = parent.appendingPathComponent(name)
-        guard installed.lastPathComponent != name, !FileManager.default.fileExists(atPath: renamed.path) else { return installed }
-        do { try FileManager.default.moveItem(at: installed, to: renamed); return renamed } catch { return installed }
+        var handedOff = false
+        defer { if !handedOff { try? FileManager.default.removeItem(at: staging) } }
+        let archive = staging.appendingPathComponent("download.zip")
+        try await download(release.asset, to: archive, session: session)
+        let appName = try UpdateArchive.validate(archive)
+        let unpacked = staging.appendingPathComponent("unpacked", isDirectory: true)
+        try FileManager.default.createDirectory(at: unpacked, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        try await unzip(archive, into: unpacked)
+        let app = unpacked.appendingPathComponent(appName, isDirectory: true)
+        try UpdateCompatibility.validate(app, replacing: current, expectedVersion: release.version)
+        let requirement = try UpdateTrust.verify(app, replacing: current)
+        do { try await UpdateInstaller.prepare(staging: staging, candidate: app, current: current, requirement: requirement) }
+        catch { handedOff = true; throw error }
+        handedOff = true
+        return current
     }
 
     static func verify(_ candidate: URL, replacing current: URL) throws {
-        guard let new = Bundle(url: candidate), let old = Bundle(url: current),
-              new.bundleIdentifier == old.bundleIdentifier else { throw UpdateError.wrongApp }
-        let newVersion = new.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
-        let oldVersion = old.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
-        guard isNewer(newVersion, than: oldVersion) else { throw UpdateError.notNewer }
-        var installed: SecStaticCode?, requirement: SecRequirement?, downloaded: SecStaticCode?
-        guard SecStaticCodeCreateWithPath(current as CFURL, [], &installed) == errSecSuccess, let installed,
-              SecCodeCopyDesignatedRequirement(installed, [], &requirement) == errSecSuccess, let requirement,
-              SecStaticCodeCreateWithPath(candidate as CFURL, [], &downloaded) == errSecSuccess, let downloaded
-        else { throw UpdateError.untrusted }
-        let flags = SecCSFlags(rawValue: kSecCSCheckAllArchitectures | kSecCSStrictValidate | kSecCSCheckNestedCode)
-        guard SecStaticCodeCheckValidity(downloaded, flags, requirement) == errSecSuccess else { throw UpdateError.untrusted }
+        try UpdateCompatibility.validate(candidate, replacing: current)
+        _ = try UpdateTrust.verify(candidate, replacing: current)
     }
 
     static func unzip(_ archive: URL, into directory: URL) async throws {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
-        process.arguments = ["-x", "-k", archive.path, directory.path]
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            process.terminationHandler = { finished in
-                finished.terminationStatus == 0 ? continuation.resume() : continuation.resume(throwing: UpdateError.unreadable)
-            }
-            do { try process.run() } catch { continuation.resume(throwing: error) }
-        }
+        _ = try UpdateArchive.validate(archive)
+        try await UpdateProcess.run("/usr/bin/ditto", arguments: ["-x", "-k", "--norsrc", archive.path, directory.path])
     }
 
-    /// Reopens the app at `bundle` once this process has exited.
-    public static func relaunch(_ bundle: URL) {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = ["-c", "while /bin/kill -0 \(ProcessInfo.processInfo.processIdentifier) 2>/dev/null; do sleep 0.2; done; /usr/bin/open \"$0\"", bundle.path]
-        try? process.run()
+    static func download(_ asset: URL, to destination: URL, session: URLSession) async throws {
+        guard asset.scheme == "https" else { throw UpdateError.unreadable }
+        let request = URLRequest(url: asset, timeoutInterval: 30)
+        let (bytes, response) = try await session.bytes(for: request)
+        guard (response as? HTTPURLResponse)?.statusCode == 200,
+              response.expectedContentLength <= UpdateArchive.compressedLimit else { throw UpdateError.unsafeArchive }
+        guard FileManager.default.createFile(atPath: destination.path, contents: nil, attributes: [.posixPermissions: 0o600]) else { throw UpdateError.unreadable }
+        let handle = try FileHandle(forWritingTo: destination)
+        defer { try? handle.close() }
+        var count = 0, buffer = Data()
+        let deadline = Date().addingTimeInterval(120)
+        for try await byte in bytes {
+            count += 1
+            guard count <= UpdateArchive.compressedLimit else { throw UpdateError.unsafeArchive }
+            guard Date() < deadline else { throw UpdateError.timedOut }
+            try Task.checkCancellation()
+            buffer.append(byte)
+            if buffer.count == 65_536 { try handle.write(contentsOf: buffer); buffer.removeAll(keepingCapacity: true) }
+        }
+        try handle.write(contentsOf: buffer)
     }
 }
 
@@ -163,15 +162,14 @@ extension AppModel {
         }
     }
 
-    /// Returns true when the new version is in place and the app should quit to relaunch.
+    /// True means the acknowledged recovery helper is ready; quit to let it swap and launch.
     public func installUpdate(_ release: Release) async -> Bool {
         guard !installingUpdate, !shuttingDown else { return false }
         installingUpdate = true; updateRevision &+= 1
         update = .downloading(release)
         do {
-            let installed = try await Updater.install(release, replacing: Bundle.main.bundleURL)
+            _ = try await Updater.install(release, replacing: Bundle.main.bundleURL)
             update = .ready(release)
-            Updater.relaunch(installed)
             return true
         } catch {
             installingUpdate = false
