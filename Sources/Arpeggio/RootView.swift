@@ -16,24 +16,21 @@ struct RootView: View {
             Sidebar(model: model, navigator: navigator)
                 .navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 280)
         } detail: {
-            detail
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .safeAreaInset(edge: .top, spacing: 0) {
-                    VStack(spacing: 0) {
-                        if let error = model.error {
-                            ErrorBanner(model: model, message: error) { model.error = nil }
-                        }
-                        UpdateBanner(model: model)
-                    }
+            DetailChrome(showsPlayer: model.playback.item != nil) {
+                detail
+            } banners: {
+                if model.settingsRecovery != nil { SettingsRecoveryBanner(model: model) }
+                if let error = model.error, error != model.settingsRecovery?.reason {
+                    ErrorBanner(model: model, message: error) { model.error = nil }
                 }
-                .safeAreaInset(edge: .bottom, spacing: 0) {
-                    if model.playback.item != nil {
-                        NowPlayingBar(model: model, navigator: navigator)
-                            .transition(.move(edge: .bottom).combined(with: .opacity))
-                    }
-                }
-                .overlay(alignment: .bottom) { NoticeToast(model: model, navigator: navigator) }
-                .animation(reduceMotion ? nil : .spring(duration: 0.35, bounce: 0.2), value: model.playback.item?.transferID ?? model.playback.item?.title)
+                ReconnectBanner(model: model)
+                UpdateBanner(model: model)
+            } player: { layout in
+                NowPlayingBar(model: model, navigator: navigator, layout: layout)
+            } toast: { padding in
+                NoticeToast(model: model, navigator: navigator, bottomPadding: padding)
+            }
+            .animation(reduceMotion ? nil : .spring(duration: 0.35, bounce: 0.2), value: model.playback.item?.transferID ?? model.playback.item?.title)
         }
         .confirmationDialog("Sign out of \(model.settings.username)?", isPresented: $navigator.confirmSignOut) {
             Button("Sign Out", role: .destructive) { Task { await model.signOut() } }
@@ -194,14 +191,25 @@ enum DiagnosticDigest {
     }
 }
 
+/// Where an error message should send people in Settings. Port and listener problems go to Network.
+enum ErrorRoute {
+    static func destination(for message: String) -> SettingsDestination? {
+        let text = message.lowercased()
+        if text.contains("settings › network") || text.contains("listening port") || text.contains("port forwarding") { return .network }
+        return nil
+    }
+}
+
 struct ErrorBanner: View {
     let model: AppModel
     let message: String
     let dismiss: () -> Void
     @State private var expanded = false
+    @State private var copied = false
 
     private var headline: String { DiagnosticDigest.headline(message) }
-    private var details: [DiagnosticDigest.Entry] { DiagnosticDigest.collapse(model.diagnostics, limit: 12) }
+    /// Only warnings and errors: routine peer activity is not presented as the cause of this problem.
+    private var details: [DiagnosticDigest.Entry] { DiagnosticDigest.collapse(model.diagnosticStore.problems.map(\.message), limit: 12) }
     private var offerSoulseekServer: Bool { model.settings.isLocalServer && !model.connection.isConnected }
 
     var body: some View {
@@ -232,11 +240,15 @@ struct ErrorBanner: View {
                         .help("Switch to \(AppSettings.soulseekEndpoint). Your username and saved password are kept.")
                 }
                 Group {
+                    if let destination = ErrorRoute.destination(for: message) {
+                        SettingsDestinationLink(destination: destination, model: model) { Text("Network Settings…") }
+                    }
                     if !details.isEmpty {
                         Button(expanded ? "Hide Details" : "Details") { expanded.toggle() }
-                            .accessibilityHint("Shows recent unique diagnostic messages")
+                            .accessibilityHint("Shows recent warnings and errors")
                     }
-                    Button("Copy", action: copy)
+                    Button(copied ? "Copied" : "Copy Report", action: copy)
+                        .help("Copies a privacy-safe report without usernames, paths, addresses or message text")
                 }
                 .buttonStyle(.link)
                 .fixedSize()
@@ -263,9 +275,8 @@ struct ErrorBanner: View {
                 .defaultScrollAnchor(.bottom)
                 .frame(maxHeight: 88)
                 HStack(spacing: 4) {
-                    Text("\(details.count) unique of \(model.diagnostics.count) recent messages.")
-                    SettingsLink { Text("Full log in Settings › Advanced") }
-                        .buttonStyle(.link)
+                    Text("\(details.count) recent problem\(details.count == 1 ? "" : "s").")
+                    SettingsDestinationLink(tab: .advanced, model: model) { Text("All activity in Settings › Advanced") }
                 }
                 .font(.caption)
                 .foregroundStyle(.tertiary)
@@ -280,7 +291,72 @@ struct ErrorBanner: View {
 
     private func copy() {
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(([headline] + details.map(\.display)).joined(separator: "\n"), forType: .string)
+        NSPasteboard.general.setString(model.redactedCopyReport(), forType: .string)
+        copied = true
+        Task { try? await Task.sleep(for: .seconds(2)); copied = false }
+    }
+}
+
+/// While a lost connection waits to retry: a live countdown and Retry Now. Hidden when not retrying.
+struct ReconnectBanner: View {
+    let model: AppModel
+
+    var body: some View {
+        if case .failed = model.connection, let deadline = model.reconnectSchedule.deadline {
+            HStack(spacing: 10) {
+                Image(systemName: "arrow.triangle.2.circlepath").foregroundStyle(Color.arpeggio).accessibilityHidden(true)
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    Text(Self.countdown(deadline: deadline, now: context.date))
+                        .font(.callout).monospacedDigit()
+                }
+                Spacer()
+                Button("Retry Now") { Task { await model.retryNow() } }
+                    .controlSize(.small)
+            }
+            .padding(.horizontal, 14).padding(.vertical, 8)
+            .background(.quaternary.opacity(0.4))
+            .overlay(alignment: .bottom) { Divider() }
+            .accessibilityElement(children: .contain)
+        } else if model.connection == .reconnecting {
+            HStack(spacing: 10) {
+                ProgressView().controlSize(.small)
+                Text("Reconnecting…").font(.callout).foregroundStyle(.secondary)
+                Spacer()
+            }
+            .padding(.horizontal, 14).padding(.vertical, 8)
+            .background(.quaternary.opacity(0.4))
+            .overlay(alignment: .bottom) { Divider() }
+        }
+    }
+
+    nonisolated static func countdown(deadline: Date, now: Date) -> String {
+        let seconds = max(0, Int(ceil(deadline.timeIntervalSince(now))))
+        if seconds == 0 { return "Connection lost. Reconnecting now…" }
+        let wait = seconds < 60 ? "\(seconds) s" : "\(seconds / 60) min \(seconds % 60) s"
+        return "Connection lost. Reconnecting in \(wait)."
+    }
+}
+
+/// Unreadable saved settings: Arpeggio stays offline and leaves them untouched until the person chooses a recovery.
+struct SettingsRecoveryBanner: View {
+    let model: AppModel
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange).accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Saved settings couldn’t be read").font(.callout.weight(.semibold))
+                Text("Arpeggio won’t sign in or save over them until you choose how to recover. Downloads and history are safe.")
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            SettingsDestinationLink(destination: .recovery, model: model) { Text("Recover Settings…") }
+                .fixedSize()
+        }
+        .padding(.horizontal, 14).padding(.vertical, 8)
+        .background(.orange.opacity(0.08))
+        .overlay(alignment: .bottom) { Divider() }
+        .accessibilityElement(children: .contain)
     }
 }
 
