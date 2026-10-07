@@ -25,7 +25,8 @@ extension AppModel {
         }
         var next = imported.settings
         if connection.isOnline { next.username = settings.username; next.server = settings.server; next.port = settings.port }
-        settings = next
+        if settingsRecovery != nil { try await resolveSettingsRecovery(with: next) }
+        else { settings = next }
         for user in imported.users {
             if let index = users.firstIndex(where: { $0.username == user.username }) { users[index] = user } else { users.append(user) }
             try await database.put(user, collection: "users", id: user.username)

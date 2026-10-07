@@ -8,6 +8,8 @@ import TransferEngine
 @MainActor @Observable
 public final class AppModel {
     public var settings = AppSettings()
+    public internal(set) var settingsRecovery: SettingsRecovery?
+    public internal(set) var settingsRecoveryBackupID: String?
     public var connection: ConnectionState = .offline
     public private(set) var activeAccount = ""
     public var query = ""
@@ -140,20 +142,23 @@ public final class AppModel {
         transferEngine = TransferEngine(session: session, database: database, root: URL(fileURLWithPath: AppSettings().downloadDirectory))
     }
     public func start() async {
+        var storageReady = false
+        await loadEssentialSettings()
+        activeAccount = settingsRecovery == nil ? settings.username : ""
+        users = (try? await database.allValid(UserRecord.self, collection: "users")) ?? []
+        wishlist = (try? await database.allValid(WishlistEntry.self, collection: "wishlist")) ?? []
+        messages = ((try? await database.allValid(ChatMessage.self, collection: "messages")) ?? []).filter { $0.account == activeAccount }.sorted { $0.date < $1.date }
+        history = (try? await database.allValid(SearchHistory.self, collection: "history")) ?? []
+        for library in (try? await database.allValid(RemoteLibrary.self, collection: "libraries", limit: 10)) ?? [] { libraries[library.user] = library }
         do {
-            settings = try await database.all(AppSettings.self, collection: "settings").first ?? AppSettings()
-            activeAccount = settings.username
-            users = try await database.all(UserRecord.self, collection: "users")
-            wishlist = try await database.all(WishlistEntry.self, collection: "wishlist")
-            messages = try await database.all(ChatMessage.self, collection: "messages").filter { $0.account == activeAccount }.sorted { $0.date < $1.date }
-            history = try await database.all(SearchHistory.self, collection: "history")
-            for library in try await database.all(RemoteLibrary.self, collection: "libraries", limit: 10) { libraries[library.user] = library }
             await configureTransfers()
             await transferEngine.setPreviewRoot(dataDirectory == Self.defaultDataDirectory ? Self.previewDirectory() : dataDirectory.appendingPathComponent("Previews", isDirectory: true))
             try await transferEngine.restore()
             await transferEngine.purgePreviewCache()
             await loadStatistics(history: await transferEngine.snapshot())
-        } catch { self.error = error.localizedDescription }
+            let accountingReady = await transferEngine.accountingReady
+            storageReady = settingsRecovery == nil && accountingReady
+        } catch { self.error = error.localizedDescription; log("storage error: Could not restore application records.") }
         loadProfilePicture()
         awayNow = settings.isAway
         menuBarExtraVisible = settings.showsMenuBarIcon
@@ -220,7 +225,7 @@ public final class AppModel {
         }
     }
     public func saveSettings() async {
-        guard !shuttingDown else { return }
+        guard !shuttingDown, settingsRecovery == nil else { return }
         do {
             await transferEngine.revalidateUploads()
             try await database.put(settings, collection: "settings", id: "main")
@@ -263,11 +268,13 @@ public final class AppModel {
         _ = await shareScanTask?.value
         await initialShareTask?.value
         shareScanTask = nil; initialShareTask = nil
-        do { try await database.put(settings, collection: "settings", id: "main") } catch { log(error.localizedDescription) }
+        if settingsRecovery == nil {
+            do { try await database.put(settings, collection: "settings", id: "main") } catch { log("storage error: Could not save settings at shutdown.") }
+        }
         await database.close()
     }
     public func login(password: String, remember: Bool = true, automatic: Bool = false) async {
-        guard !shuttingDown else { return }
+        guard !shuttingDown, settingsRecovery == nil else { return }
         error = nil
         loginRevision &+= 1; let revision = loginRevision
         activeSessionGeneration = nil
@@ -326,7 +333,7 @@ public final class AppModel {
         catch { self.error = error.localizedDescription; return "" }
     }
     public func connectAtLaunch() async {
-        guard !startupConnectionAttempted, !Task.isCancelled, settings.connectsAutomatically,
+        guard settingsRecovery == nil, !startupConnectionAttempted, !Task.isCancelled, settings.connectsAutomatically,
               !settings.username.isEmpty, connection == .offline, !shuttingDown else { return }
         startupConnectionAttempted = true
         let account = (settings.username, settings.server, settings.port, settings.listeningPort, loginRevision)
