@@ -6,7 +6,7 @@ public struct AppSettings: Codable, Sendable {
     public var username = ""
     public var server = Self.soulseekHost
     public var port: UInt16 = Self.soulseekPort
-    public var listeningPort: UInt16 = 2234
+    public var listeningPort: UInt16 = 61147
     public var downloadDirectory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads/Arpeggio").path
     public var downloadSlots = 3
     public var uploadSlots = 2
