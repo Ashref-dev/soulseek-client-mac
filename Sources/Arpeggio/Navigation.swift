@@ -119,8 +119,14 @@ extension FocusedValues {
     @Entry var navigator: Navigator?
 }
 
+/// sRGB components shared by SwiftUI colours and Core Graphics drawing, so they cannot drift apart.
+enum BrandTone {
+    static let purple = (red: 0.53, green: 0.45, blue: 0.88)
+    static let muted = (red: 0.55, green: 0.55, blue: 0.57)
+}
+
 extension Color {
-    static let arpeggio = Color(red: 0.53, green: 0.45, blue: 0.88)
+    static let arpeggio = Color(red: BrandTone.purple.red, green: BrandTone.purple.green, blue: BrandTone.purple.blue)
     /// The statistics card's fixed brand palette, the same in light and dark appearance.
     static let arpeggioDeep = Color(red: 0.36, green: 0.27, blue: 0.78)
     static let arpeggioNight = Color(red: 0.10, green: 0.08, blue: 0.27)
