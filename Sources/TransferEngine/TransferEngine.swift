@@ -151,17 +151,53 @@ public actor TransferEngine {
         }
     }
     public func enqueue(_ results: [SearchResult]) async throws {
+        try requireAccountingInitialization()
+        var known = Dictionary(transfers.filter { !$0.upload && $0.status != .completed }.map { ("\($0.user)\u{0}\($0.file.path)", $0.id) }, uniquingKeysWith: { first, _ in first })
+        var existingIDs = Set(transfers.map(\.id))
+        var existingIndices = Dictionary(uniqueKeysWithValues: transfers.enumerated().map { ($0.element.id, $0.offset) })
+        var partialPaths = Set(transfers.filter { $0.status != .completed || tasks[$0.id] != nil || closing.contains($0.id) }.compactMap(\.partial))
+        var previews = Dictionary(transfers.filter { $0.isPreview && $0.status != .cancelled }.map { ("\($0.user)\u{0}\($0.file.path)", $0.id) }, uniquingKeysWith: { first, _ in first })
+        known.merge(previews) { first, _ in first }
+        var pending: [Transfer] = []
         for result in results {
             guard result.file.size <= 16 * 1024 * 1024 * 1024 else { throw ProtocolError.oversized }
-            if let preview = transfers.first(where: { $0.isPreview && $0.user == result.user && $0.file.path == result.file.path && $0.status != .cancelled }) {
-                try await keep(preview.id); continue
+            if let preview = previews["\(result.user)\u{0}\(result.file.path)"] {
+                try await keep(preview)
+                try requireAccountingInitialization()
+                let currentKnown = Dictionary(transfers.filter { !$0.upload && $0.status != .completed }.map { ("\($0.user)\u{0}\($0.file.path)", $0.id) }, uniquingKeysWith: { first, _ in first })
+                pending.removeAll { item in
+                    !existingIDs.contains(item.id) && (currentKnown["\(item.user)\u{0}\(item.file.path)"] != nil || item.partial.map { partialOwner($0) != nil } == true)
+                }
+                known.merge(currentKnown) { _, current in current }
+                existingIDs.formUnion(transfers.map(\.id))
+                existingIndices = Dictionary(uniqueKeysWithValues: transfers.enumerated().map { ($0.element.id, $0.offset) })
+                partialPaths = Set(transfers.filter { $0.status != .completed || tasks[$0.id] != nil || closing.contains($0.id) }.compactMap(\.partial))
+                partialPaths.formUnion(pending.compactMap(\.partial))
+                previews = Dictionary(transfers.filter { $0.isPreview && $0.status != .cancelled }.map { ("\($0.user)\u{0}\($0.file.path)", $0.id) }, uniquingKeysWith: { first, _ in first })
+                continue
             }
-            if transfers.contains(where: { !$0.upload && $0.user == result.user && $0.file.path == result.file.path && (![.cancelled, .completed].contains($0.status) || closing.contains($0.id)) }) { continue }
+            let key = "\(result.user)\u{0}\(result.file.path)"
+            if let id = known[key] {
+                if let index = existingIndices[id], transfers[index].status == .cancelled, !closing.contains(id), !partialConflicts.contains(id),
+                   transfers[index].partial.map({ partialOwner($0, excluding: id) == nil }) ?? true {
+                    transfers[index].status = .queued; transfers[index].error = nil; pending.append(transfers[index])
+                }
+                continue
+            }
             let (destination, partial) = try SafeDestination.plan(root: downloadRoot, user: result.user, remotePath: result.file.path, layout: layout)
             var transfer = Transfer(user: result.user, file: result.file)
             transfer.destination = destination.path; transfer.partial = partial.path
-            transfers.append(transfer); try await database.put(transfer, collection: "transfers", id: transfer.id)
+            guard partialPaths.insert(partial.path).inserted else { continue }
+            pending.append(transfer); known[key] = transfer.id
         }
+        pending = pending.compactMap { item in
+            guard existingIDs.contains(item.id) else { return item }
+            return existingIndices[item.id].map { transfers[$0] }
+        }
+        let inserts = pending.filter { !existingIDs.contains($0.id) }
+        transfers.append(contentsOf: inserts)
+        do { try await checkpoint(pending) }
+        catch { let ids = Set(inserts.map(\.id)); transfers.removeAll { ids.contains($0.id) }; throw error }
         publish(); await pump()
     }
     public func pause(_ id: String) async { await change(id, to: .paused) }
