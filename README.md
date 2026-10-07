@@ -20,19 +20,25 @@ Soulseek is a long-running peer-to-peer network where people share their music l
 - **Router diagnostics.** Choose NAT-PMP and UPnP independently. Arpeggio reports actual mapping acknowledgments, not assumed compatibility or external reachability. Check Ports tests the local TCP listener. Check External Reachability contacts Soulseek's HTTPS port checker only after confirmation, with no credentials. It tests the public route used by that request; VPN routes may differ. Listening ports are never changed automatically.
 - **Updates itself** from GitHub Releases, and only installs updates signed by the same developer.
 
+Version 0.6 implements safer transfer history controls and independent Flat, Folders and Users > Folders > Files layouts for downloads and uploads. Removing a row from the list is not file deletion. An active transfer requires confirmation to stop first; completed files, partial downloads and lifetime totals are retained. It also adds an original purple bird Available/Away control, a Network settings destination, typed diagnostics with a redacted Copy Report, reconnect countdown and retry, a compact player with playback commands, and more explicit privacy and port onboarding. Reliability work protects partial-file ownership, settings recovery, transfer history restore, accounting, reentrant batch enqueue and updater replacement. The latest plain full test run passed 313 tests in 52 suites; final native UI inspection by the user remains outstanding. The published preview artifact still needs a fresh build from the final clean source. See the [0.6 acceptance gates](docs/ROADMAP-0.6.md) and [release notes](docs/RELEASE-0.6.md).
+
 ## Install
 
-1. Download `Soulseek-Arpeggio-x.y.z.zip` from the [latest release](https://github.com/Ashref-dev/soulseek-client-mac/releases/latest).
-2. Unzip it and move **Soulseek-Arpeggio** to Applications. Search for "Soulseek" or "Arpeggio" in Spotlight to open it.
-3. Open it. Release builds are signed but not notarized yet, so the first time macOS may refuse to open it. Choose **System Settings > Privacy & Security > Open Anyway**, or Control-click the app and choose **Open**.
+1. For an existing stable build, use the [latest stable release](https://github.com/Ashref-dev/soulseek-client-mac/releases/latest). The 0.6.0-rc.1 preview is a GitHub prerelease at the [exact tag page](https://github.com/Ashref-dev/soulseek-client-mac/releases/tag/v0.6.0-rc.1), not the stable latest link or updater. Confirm the release exists before downloading.
+2. Download the single `Soulseek-Arpeggio-0.6.0-rc.1.zip` archive from that release page, unzip it, then replace the app in Applications with **Soulseek-Arpeggio**. The app data and credentials are stored separately and are not removed by replacing the application. Older clients may not accept this preview through the updater, so use the manual download path.
+3. Open it. The 0.6 preview is signed with the pinned Apple Development certificate, not notarized. If macOS blocks it, use **System Settings > Privacy & Security > Open Anyway** if macOS offers that option. Do not use Control-click > Open as a workaround or treat signature validity as notarization or Gatekeeper approval. The About view reports the custom prerelease version.
 
-Arpeggio needs macOS 27 or later. A welcome guide walks you through signing in and sharing your music folder. There is no separate sign-up on Soulseek: if the username you pick is free, the server registers it the first time you sign in.
+The current support target is Apple Silicon and macOS 27 or later. No Intel or older-macOS support is claimed. A welcome guide walks you through signing in and sharing your music folder. There is no separate sign-up on Soulseek: if the username you pick is free, the server registers it the first time you sign in.
+
+### Listening port and router
+
+New profiles use TCP port **61147**. An existing profile keeps its saved listening port. Arpeggio does not rewrite it or add a second, obfuscated port. To receive incoming connections, set your router's TCP **Port Forwarding** or **Virtual Server** rule to the port shown in Arpeggio and the Mac's current LAN IP address. If you used SoulseekQt, use the same listening port as that client. Router menus differ; reserve the Mac's LAN address if your router supports it. Only one client can listen on a given port on the same Mac at a time. Don't run another Soulseek client on the same account and same port alongside Arpeggio.
 
 With **Remember password** enabled, Arpeggio saves your password in Keychain after successful authentication and connects automatically on the next launch without waiting for folder indexing. If the password is missing or Keychain blocks access, the app explains what needs attention instead of staying silently offline. Sign Out disconnects and forgets the password; Disconnect only goes offline for the current session.
 
 Shared-folder metadata is cached after a successful scan. Relaunch still checks actual files, paths, sizes, modification times and current sharing permissions before advertising them. Unchanged Settings saves do not queue another scan; filesystem changes still do. A first scan of a large library can take time, and the app now distinguishes indexing from having no configured shares.
 
-See [the 0.6 release gates](docs/ROADMAP-0.6.md) for remaining distribution, reliability and performance work. Current downloadable builds are development releases, not notarized public-distribution builds.
+The 0.6 software tests, including the latest enqueue reentrancy regression and full suite, have passed. The earlier F3 candidate predates that last source correction and must not be published; prepare a new artifact from the final clean source. The preview remains an unnotarized development build. No Developer ID/notarization, quarantined clean-Mac install or upgrade, or independent-network transfer receipts are available. Final manual review of the native UI is also still required. The [0.6 release gates](docs/ROADMAP-0.6.md) distinguish completed software checks from those outstanding distribution and user-acceptance gates.
 
 ## Build from source
 
@@ -46,9 +52,9 @@ bash scripts/build-app.sh
 open dist/Soulseek-Arpeggio.app
 ```
 
-`build-app.sh` signs with the first Apple Development or Developer ID identity in your keychain and falls back to ad-hoc signing. A stable identity matters: macOS ties the saved Keychain password to it, and the updater only accepts releases signed by the same identity. Set `ARPEGGIO_SIGNING_IDENTITY` to choose one explicitly.
+`build-app.sh` needs a stable signing identity for Keychain access and updater trust. The current preview path uses the configured Apple Development identity. A production release requires Developer ID signing, hardened runtime, a secure timestamp, accepted notarization and a stapled ticket. Those production credentials and external acceptance receipts are not available yet.
 
-Release builds also produce `dist/Soulseek-Arpeggio-x.y.z.zip`. `scripts/release.sh` runs the tests, builds, checks the signature and publishes the version in `Resources/Info.plist` as a GitHub release. Versions follow [semantic versioning](https://semver.org).
+Release builds also produce `dist/Soulseek-Arpeggio-x.y.z.zip`. For example, preview commands are `bash scripts/release.sh prepare preview FULL_PUBLIC_MAIN_SHA` and then `bash scripts/release.sh publish preview FULL_PUBLIC_MAIN_SHA [notes-file]`. Production uses the same two actions with `production` as the mode. `prepare` tests and builds/signs the candidate once. Verify and test that exact archive. `publish` checks the existing artifact and acceptance receipts, then uploads the same archive bytes without rebuilding. Both stages require a clean source tree and exact target SHA on the actual public repository's `main`; production additionally requires owner-provided notarization and exact-artifact acceptance receipts. See [release notes and distribution requirements](docs/RELEASE-0.6.md). Versions follow [semantic versioning](https://semver.org).
 
 ## Where things live
 
@@ -63,6 +69,7 @@ Release builds also produce `dist/Soulseek-Arpeggio-x.y.z.zip`. `scripts/release
 ## Privacy and safety
 
 - The Soulseek protocol sends your password to the server without encryption. Use a password you don't use anywhere else.
+- Your Soulseek username and public IP address are exposed through ordinary network activity. Use Copy Report only after reviewing its redacted output. Don't share raw diagnostics, which may contain identifying details.
 - Only folders you choose are shared. Hidden files and symbolic links are never shared, and trusted-only folders are visible only to people you mark as trusted.
 - Remote paths are checked before anything touches the disk. Traversal, unsafe names, symbolic link escapes, oversized files and malformed messages are rejected.
 - Soulseek has no checksums, so a finished download only proves the byte count matched. Don't run executables from strangers.
