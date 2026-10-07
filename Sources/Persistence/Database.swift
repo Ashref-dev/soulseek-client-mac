@@ -8,6 +8,25 @@ public enum StorageError: Error, LocalizedError {
 
 public actor Database {
     private var handle: OpaquePointer?
+    private var transactionActive = false
+    private var failCommit = false
+    public private(set) var transactionCount = 0
+    /// Deterministic fault injection for isolated database tests, never changes stored data.
+    public func failNextTransactionCommit() { failCommit = true }
+    public func transaction<T: Sendable>(_ body: @Sendable (isolated Database) throws -> T) throws -> T {
+        guard !transactionActive else { throw StorageError.sqlite("Nested transaction.") }
+        try execute("BEGIN IMMEDIATE"); transactionActive = true
+        defer { transactionActive = false }
+        do {
+            let result = try body(self)
+            if failCommit { failCommit = false; throw StorageError.sqlite("Injected commit failure.") }
+            try execute("COMMIT"); transactionCount += 1
+            return result
+        } catch { try? execute("ROLLBACK"); throw error }
+    }
+    private func execute(_ sql: String) throws {
+        guard let handle, sqlite3_exec(handle, sql, nil, nil, nil) == SQLITE_OK else { throw failure() }
+    }
     public init(url: URL) throws {
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         guard sqlite3_open_v2(url.path, &handle, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
@@ -51,6 +70,9 @@ public actor Database {
     }
     public func put<T: Encodable & Sendable>(_ value: T, collection: String, id: String) throws {
         let data = try JSONEncoder().encode(value)
+        try putRaw(data, collection: collection, id: id)
+    }
+    public func putRaw(_ data: Data, collection: String, id: String) throws {
         let statement = try prepare("INSERT INTO records VALUES(?,?,?,?) ON CONFLICT(collection,id) DO UPDATE SET payload=excluded.payload, updated=excluded.updated")
         defer { sqlite3_finalize(statement) }
         bind(collection, to: statement, at: 1); bind(id, to: statement, at: 2)
@@ -59,6 +81,55 @@ public actor Database {
         }
         sqlite3_bind_double(statement, 4, Date().timeIntervalSince1970)
         guard sqlite3_step(statement) == SQLITE_DONE else { throw failure() }
+    }
+    public func raw(collection: String, id: String) throws -> Data? {
+        let statement = try prepare("SELECT payload FROM records WHERE collection=? AND id=?")
+        defer { sqlite3_finalize(statement) }
+        bind(collection, to: statement, at: 1); bind(id, to: statement, at: 2)
+        let result = sqlite3_step(statement)
+        if result == SQLITE_DONE { return nil }
+        guard result == SQLITE_ROW else { throw failure() }
+        let count = Int(sqlite3_column_bytes(statement, 0))
+        guard let bytes = sqlite3_column_blob(statement, 0) else { return Data() }
+        return Data(bytes: bytes, count: count)
+    }
+    public func get<T: Decodable & Sendable>(_ type: T.Type, collection: String, id: String) throws -> T? {
+        try raw(collection: collection, id: id).map { try JSONDecoder().decode(type, from: $0) }
+    }
+    /// SQLite filters the BLOB as text, so old unfinished work is not hidden by history limits.
+    public func transferRecords<T: Decodable & Sendable>(_ type: T.Type, terminalLimit: Int = 10000) throws -> [T] {
+        let sql = """
+        SELECT payload FROM records WHERE collection='transfers' AND
+        CASE WHEN json_valid(CAST(payload AS TEXT)) THEN
+          COALESCE(json_extract(CAST(payload AS TEXT),'$.status'),'') NOT IN ('completed','cancelled') ELSE 0 END
+        UNION ALL SELECT payload FROM (SELECT payload FROM records WHERE collection='transfers' AND
+        CASE WHEN json_valid(CAST(payload AS TEXT)) THEN
+          json_extract(CAST(payload AS TEXT),'$.status') IN ('completed','cancelled') ELSE 0 END
+        ORDER BY updated DESC LIMIT ?)
+        """
+        let statement = try prepare(sql); defer { sqlite3_finalize(statement) }
+        sqlite3_bind_int(statement, 1, Int32(clamping: max(0, terminalLimit)))
+        var values: [T] = []
+        while true {
+            let result = sqlite3_step(statement)
+            if result == SQLITE_DONE { return values }
+            guard result == SQLITE_ROW else { throw failure() }
+            let count = Int(sqlite3_column_bytes(statement, 0))
+            if let bytes = sqlite3_column_blob(statement, 0), let value = try? JSONDecoder().decode(type, from: Data(bytes: bytes, count: count)) { values.append(value) }
+        }
+    }
+    public func allValid<T: Decodable & Sendable>(_ type: T.Type, collection: String, limit: Int = 10000) throws -> [T] {
+        let statement = try prepare("SELECT payload FROM records WHERE collection=? ORDER BY updated DESC LIMIT ?")
+        defer { sqlite3_finalize(statement) }
+        bind(collection, to: statement, at: 1); sqlite3_bind_int(statement, 2, Int32(clamping: max(1, limit)))
+        var values: [T] = []
+        while true {
+            let result = sqlite3_step(statement)
+            if result == SQLITE_DONE { return values }
+            guard result == SQLITE_ROW else { throw failure() }
+            let count = Int(sqlite3_column_bytes(statement, 0))
+            if let bytes = sqlite3_column_blob(statement, 0), let value = try? JSONDecoder().decode(type, from: Data(bytes: bytes, count: count)) { values.append(value) }
+        }
     }
     public func all<T: Decodable & Sendable>(_ type: T.Type, collection: String, limit: Int = 10_000) throws -> [T] {
         let statement = try prepare("SELECT payload FROM records WHERE collection=? ORDER BY updated DESC LIMIT ?")
