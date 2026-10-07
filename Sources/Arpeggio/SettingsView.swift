@@ -9,16 +9,17 @@ struct SettingsView: View {
     @Bindable var model: AppModel
 
     var body: some View {
-        TabView {
-            Tab("General", systemImage: "gearshape") { GeneralSettings(model: model) }
-            Tab("Account", systemImage: "network") { AccountSettings(model: model) }
-            Tab("Profile", systemImage: "person.crop.circle") { ProfileSettings(model: model) }
-            Tab("Transfers", systemImage: "arrow.up.arrow.down") { TransferSettings(model: model) }
-            Tab("Sharing", systemImage: "externaldrive") { SharingSettings(model: model) }
-            Tab("Statistics", systemImage: "chart.bar.xaxis") { StatisticsSettings(model: model) }
-            Tab("Advanced", systemImage: "wrench.and.screwdriver") { AdvancedSettings(model: model) }
+        TabView(selection: $model.settingsTab) {
+            Tab("General", systemImage: "gearshape", value: SettingsTab.general) { GeneralSettings(model: model) }
+            Tab("Account", systemImage: "person.badge.key", value: SettingsTab.account) { AccountSettings(model: model) }
+            Tab("Network", systemImage: "network", value: SettingsTab.network) { NetworkSettingsView(model: model) }
+            Tab("Profile", systemImage: "person.crop.circle", value: SettingsTab.profile) { ProfileSettings(model: model) }
+            Tab("Transfers", systemImage: "arrow.up.arrow.down", value: SettingsTab.transfers) { TransferSettings(model: model) }
+            Tab("Sharing", systemImage: "externaldrive", value: SettingsTab.sharing) { SharingSettings(model: model) }
+            Tab("Statistics", systemImage: "chart.bar.xaxis", value: SettingsTab.statistics) { StatisticsSettings(model: model) }
+            Tab("Advanced", systemImage: "wrench.and.screwdriver", value: SettingsTab.advanced) { AdvancedSettings(model: model) }
         }
-        .frame(width: 560)
+        .frame(width: 600)
         .tint(.arpeggio)
         .task(id: try? JSONEncoder().encode(model.settings)) {
             try? await Task.sleep(for: .milliseconds(450))
@@ -123,7 +124,6 @@ private struct GeneralSettings: View {
 private struct AccountSettings: View {
     @Bindable var model: AppModel
     @State private var confirmSignOut = false
-    @State private var confirmExternalCheck = false
 
     var body: some View {
         Form {
@@ -177,89 +177,22 @@ private struct AccountSettings: View {
                 }
             }
             Section {
-                TextField("Listening port", value: $model.settings.listeningPort, format: .number.grouping(.never))
-                    .help("Other people connect to this TCP port.")
-                Toggle("Open the port on my router automatically", isOn: Binding(get: { model.settings.mapsPorts }, set: { model.settings.portMapping = $0 }))
-                Toggle("Use NAT-PMP", isOn: Binding(get: { model.settings.usesNATPMP }, set: { model.settings.natPMPEnabled = $0 })).disabled(!model.settings.mapsPorts)
-                Toggle("Use UPnP", isOn: Binding(get: { model.settings.usesUPnP }, set: { model.settings.upnpEnabled = $0 })).disabled(!model.settings.mapsPorts)
-                LabeledContent("Router") { portStatus }
-                HStack {
-                    Button("Check Ports") { Task { await model.checkListeningPort() } }
-                        .help("Tests the local TCP listener on this Mac only")
-                    Button("Check External Reachability…") { confirmExternalCheck = true }
-                        .disabled(!model.canCheckExternalPort)
-                        .help(model.connection.isConnected
-                              ? "Ask the Soulseek port checker whether \(String(model.settings.listeningPort))/TCP is reachable from the internet"
-                              : "Connect first. The check tests the port Arpeggio is listening on.")
-                    if model.currentExternalPortCheck?.isChecking == true {
-                        ProgressView().controlSize(.small)
-                        Button("Cancel") { model.cancelExternalPortCheck() }.controlSize(.small)
+                LabeledContent("Listening port") {
+                    HStack(spacing: 8) {
+                        Text(String(model.settings.listeningPort)).monospacedDigit()
+                        SettingsDestinationLink(destination: .network, model: model) { Text("Network Settings…") }
                     }
                 }
-                if let check = model.portCheck { Text(check).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
-                if let external = model.currentExternalPortCheck { ExternalPortCheckStatus(check: external) }
-            } header: {
-                Text("Incoming Connections")
             } footer: {
-                Text("Uses NAT-PMP or UPnP when your router supports it. If it doesn’t, forward the TCP port manually so people can always reach you. Changes apply the next time you connect. Check Ports tests only this Mac. Check External Reachability runs only when you choose it.")
-                    .foregroundStyle(.secondary)
+                Text("Port forwarding, router mapping and reachability checks are in Network.").foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
-        .frame(height: 560)
+        .frame(height: 470)
         .confirmationDialog("Sign out of \(model.settings.username)?", isPresented: $confirmSignOut) {
             Button("Sign Out", role: .destructive) { Task { await model.signOut() } }
         } message: {
             Text("Arpeggio disconnects and forgets the saved password. Downloads, history and settings stay on this Mac.")
-        }
-        .confirmationDialog("Check whether \(String(model.settings.listeningPort))/TCP is reachable from the internet?", isPresented: $confirmExternalCheck) {
-            Button("Check Port \(String(model.settings.listeningPort))") { Task { await model.checkExternalPort() } }
-                .disabled(!model.canCheckExternalPort)
-        } message: {
-            Text("Contacts the Soulseek port checker (\(ExternalPortChecker.host)) using your public IP address. No credentials are sent. The checker tests the address your request comes from, which a VPN can change.")
-        }
-    }
-
-    @ViewBuilder private var portStatus: some View {
-        switch model.portMapping {
-        case .idle: Text(model.connection.isConnected ? "Not mapped" : "Maps when you connect").foregroundStyle(.secondary)
-        case .disabled: Text("Off").foregroundStyle(.secondary)
-        case .mapping: HStack(spacing: 6) { ProgressView().controlSize(.small); Text("Asking the router…") }.foregroundStyle(.secondary)
-        case .mapped(let method, let port, let address):
-            Label("Router acknowledged \(method) mapping for \(port)\(address.map { " · \($0)" } ?? ""). External reachability unverified.", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
-        case .unavailable(let reason): Text(reason).foregroundStyle(.orange)
-        }
-    }
-}
-
-private struct ExternalPortCheckStatus: View {
-    let check: ExternalPortCheck
-
-    var body: some View {
-        Label {
-            Text(check.summary).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-        } icon: {
-            Image(systemName: symbol).foregroundStyle(tint)
-        }
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        .accessibilityElement(children: .combine)
-    }
-
-    private var symbol: String {
-        switch check.outcome {
-        case nil: "network"
-        case .open: "checkmark.circle.fill"
-        case .closed: "xmark.circle.fill"
-        case .unavailable: "questionmark.circle"
-        }
-    }
-
-    private var tint: Color {
-        switch check.outcome {
-        case .open: .green
-        case .closed: .orange
-        default: .secondary
         }
     }
 }
