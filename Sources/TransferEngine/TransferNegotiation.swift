@@ -3,6 +3,7 @@ import SoulseekCore
 
 extension TransferEngine {
     public func peerMessage(user: String, code: UInt32, payload: Data) async throws {
+        try requireAccountingInitialization()
         var reader = WireReader(payload)
         switch code {
         case 40:
@@ -33,7 +34,7 @@ extension TransferEngine {
                 try await session.peerSend(user: user, code: 41, payload: response.data); return
             }
             remoteQueued.remove(transfers[index].id)
-            retryTasks.removeValue(forKey: transfers[index].id)?.cancel()
+            cancelRetry(transfers[index].id)
             transfers[index].token = token; transfers[index].status = .negotiating
             let id = transfers[index].id
             let identity = beginNegotiation(id)
@@ -65,7 +66,8 @@ extension TransferEngine {
                             connection.socket.cancel(); await self.session.releaseFileConnection(connection); throw CancellationError()
                         }
                         try await self.upload(transfer.id, connection: connection, attempt: attempt)
-                    } catch { await self.fail(transfer.id, error: error, attempt: attempt) }
+                    } catch { await self.failFromWorker(transfer.id, error: error, attempt: attempt) }
+                    self.workerFinished(transfer.id, attempt: attempt)
                     await self.pumpUploads()
                 }
             } else {
@@ -74,8 +76,7 @@ extension TransferEngine {
                     transfers[index].status = .queued; transfers[index].token = nil
                     invalidateNegotiation(transfer.id)
                     negotiationTasks.removeValue(forKey: transfer.id)?.cancel()
-                    uploadBlockedUntil[user] = Date().addingTimeInterval(60)
-                    Task { try? await Task.sleep(for: .seconds(60)); await self.pumpUploads() }
+                    scheduleUploadBackoff(user)
                 } else { await fail(transfer.id, error: ProtocolError.invalid(reason)) }
                 await pumpUploads()
             }
@@ -105,10 +106,11 @@ extension TransferEngine {
     }
     @discardableResult
     public func queueUpload(user: String, file: SharedFile, localURL: URL, start: Bool = true) async -> Bool {
+        guard !accountingBlocked else { return false }
         let pending = transfers.filter { $0.upload && [.queued, .negotiating, .transferring].contains($0.status) }
         guard pending.count < 1000 else { return false }
         if pending.contains(where: { $0.user == user && $0.file.path == file.path }) {
-            uploadBlockedUntil.removeValue(forKey: user)
+            clearUploadBackoff(user)
             if start { await pumpUploads() }
             return true
         }
@@ -121,9 +123,9 @@ extension TransferEngine {
     }
     public func startQueuedUploads() async { await pumpUploads() }
     func pumpUploads() async {
-        guard connected, !uploadsSuspended else { return }
+        guard !accountingBlocked, connected, !uploadsSuspended else { return }
         let revision = uploadNegotiationRevision
-        let active = transfers.filter { $0.upload && [.negotiating, .transferring].contains($0.status) }.count
+        let active = transfers.filter { $0.upload && holdsLocalSlot($0) }.count
         let queued = transfers.filter { $0.upload && $0.status == .queued && (uploadBlockedUntil[$0.user] ?? .distantPast) <= Date() }.prefix(max(0, uploadSlots - active))
         for item in queued {
             guard revision == uploadNegotiationRevision, connected, !uploadsSuspended, !closing.contains(item.id), let index = transfers.firstIndex(where: { $0.id == item.id && $0.status == .queued }) else { continue }
@@ -141,6 +143,7 @@ extension TransferEngine {
         publish()
     }
     public func acceptFile(user: String, connection: FramedConnection) async {
+        guard !accountingBlocked else { connection.socket.cancel(); await session.releaseFileConnection(connection); return }
         do {
             var reader = WireReader(try await connection.exact(4, timeout: 30)); let token = try reader.uint()
             guard await session.fileMatchesServerAddress(user, connection: connection) else {
@@ -155,7 +158,8 @@ extension TransferEngine {
             negotiationTasks.removeValue(forKey: item.id)?.cancel()
             tasks[item.id] = Task {
                 do { try await self.download(item.id, connection: connection, attempt: attempt) }
-                catch { await self.fail(item.id, error: error, attempt: attempt) }
+                catch { await self.failFromWorker(item.id, error: error, attempt: attempt) }
+                self.workerFinished(item.id, attempt: attempt)
                 await self.pump()
             }
         } catch { connection.socket.cancel(); await session.releaseFileConnection(connection) }

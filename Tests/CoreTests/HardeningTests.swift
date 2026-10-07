@@ -182,9 +182,18 @@ extension TransferEngine {
     let gate = Gate(); let task = Task { await gate.wait() }
     await engine.seed(item, task: task)
     while !(await gate.entered()) { await Task.yield() }
-    await engine.fail(item.id, error: ProtocolError.disconnected)
+    let id = item.id
+    let failure = Task { await engine.fail(id, error: ProtocolError.disconnected) }
+    while await engine.transfers.first?.status != .failed { await Task.yield() }
     #expect(task.isCancelled)
-    await gate.release(); await task.value; await engine.shutdown(); await db.close()
+    #expect(await engine.tasks[item.id] != nil)
+    #expect(await engine.closing.contains(item.id))
+    await engine.resume(item.id)
+    #expect(await engine.transfers.first?.status == .failed)
+    await gate.release(); await failure.value; await task.value
+    #expect(await engine.tasks[item.id] == nil)
+    #expect(!(await engine.closing.contains(item.id)))
+    await engine.shutdown(); await db.close()
 }
 
 extension SoulseekSession {
