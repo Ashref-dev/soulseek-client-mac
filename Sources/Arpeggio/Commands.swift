@@ -10,12 +10,7 @@ struct ArpeggioCommands: Commands {
 
     var body: some Commands {
         CommandGroup(replacing: .appInfo) {
-            Button("About Arpeggio") {
-                NSApp.orderFrontStandardAboutPanel(options: [
-                    .applicationName: "Soulseek-Arpeggio",
-                    .credits: NSAttributedString(string: "A native Soulseek client for macOS.\nNot affiliated with Soulseek."),
-                ])
-            }
+            Button("About Arpeggio") { NSApp.orderFrontStandardAboutPanel(options: AboutPanel.options()) }
             Button("Check for Updates…") { if let model { Task { await model.checkForUpdates() } } }
                 .disabled(model == nil || model?.canUpdateInPlace == false)
         }

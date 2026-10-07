@@ -2,6 +2,21 @@ import SwiftUI
 import AppKit
 import ArpeggioServices
 
+/// Update wording that must stay truthful. At `.ready` the verified update is staged; the app bundle is swapped only after
+/// this copy quits, so nothing may say "installed" yet.
+enum UpdateCopy {
+    static func ready(version: String) -> String { "Arpeggio \(version) is ready. Restarting to install…" }
+}
+
+/// The standard About panel, showing the release version (for example 0.6.0-rc.1), not only the numeric bundle version.
+enum AboutPanel {
+    static func options(bundle: Bundle = .main) -> [NSApplication.AboutPanelOptionKey: Any] {
+        [.applicationName: "Soulseek-Arpeggio",
+         .applicationVersion: UpdateCompatibility.releaseVersion(bundle),
+         .credits: NSAttributedString(string: "A native Soulseek client for macOS.\nNot affiliated with Soulseek.")]
+    }
+}
+
 struct UpdateBanner: View {
     let model: AppModel
     @State private var showNotes = false
@@ -44,7 +59,7 @@ struct UpdateBanner: View {
                     ProgressView().controlSize(.small)
                 }
             case .ready(let release):
-                bar(symbol: "checkmark.circle.fill", tint: .green) { Text("Arpeggio \(release.version) is installed. Relaunching…") }
+                bar(symbol: "arrow.clockwise.circle.fill", tint: .arpeggio) { Text(UpdateCopy.ready(version: release.version)) }
             case .failed(let message):
                 bar(symbol: "exclamationmark.triangle.fill", tint: .orange) {
                     Text(message).lineLimit(2)
