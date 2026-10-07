@@ -1,6 +1,60 @@
 import SwiftUI
 import ArpeggioServices
 
+/// Every menu key equivalent in one place, so a test can prove none collide. Playback uses Control-Command
+/// throughout: plain Space previews in lists, and Command-arrows edit text in the search field.
+enum AppShortcut: CaseIterable {
+    case help, newMessage, browseUser, find, goTo, disconnect, connect, expandAll, collapseAll, clearSearch, pauseDownloads, pauseUploads
+    case playPause, stop, skipBack, skipForward, volumeUp, volumeDown, mute
+
+    var key: KeyEquivalent {
+        switch self {
+        case .help: "?"
+        case .newMessage: "n"
+        case .browseUser: "b"
+        case .find: "f"
+        case .goTo: "k"
+        case .disconnect: "d"
+        case .connect: "l"
+        case .expandAll, .skipForward: .rightArrow
+        case .collapseAll, .skipBack: .leftArrow
+        case .clearSearch: .delete
+        case .pauseDownloads, .pauseUploads, .playPause: "p"
+        case .stop: "."
+        case .volumeUp: .upArrow
+        case .volumeDown: .downArrow
+        case .mute: "m"
+        }
+    }
+
+    var modifiers: EventModifiers {
+        switch self {
+        case .help, .find, .goTo: .command
+        case .newMessage, .browseUser, .clearSearch: [.command, .shift]
+        case .disconnect, .connect, .expandAll, .collapseAll, .pauseDownloads: [.command, .option]
+        case .pauseUploads: [.command, .option, .shift]
+        case .playPause, .stop, .skipBack, .skipForward, .volumeUp, .volumeDown, .mute: [.command, .control]
+        }
+    }
+
+    var isPlayback: Bool { [.playPause, .stop, .skipBack, .skipForward, .volumeUp, .volumeDown, .mute].contains(self) }
+}
+
+/// A comparable key plus modifiers, for collision checks.
+struct ShortcutKey: Hashable {
+    let character: Character
+    let modifiers: Int
+    init(_ key: KeyEquivalent, _ modifiers: EventModifiers) { character = key.character; self.modifiers = modifiers.rawValue }
+
+    static var all: [ShortcutKey] {
+        AppShortcut.allCases.map { ShortcutKey($0.key, $0.modifiers) } + SidebarSection.allCases.map { ShortcutKey($0.shortcut, $0.modifiers) }
+    }
+}
+
+extension View {
+    func keyboardShortcut(_ shortcut: AppShortcut) -> some View { keyboardShortcut(shortcut.key, modifiers: shortcut.modifiers) }
+}
+
 struct ArpeggioCommands: Commands {
     let model: AppModel?
     @FocusedValue(\.navigator) private var navigator
@@ -16,32 +70,32 @@ struct ArpeggioCommands: Commands {
         }
         CommandGroup(replacing: .help) {
             Button("Arpeggio Help") { openWindow(id: "help") }
-                .keyboardShortcut("?", modifiers: .command)
+                .keyboardShortcut(.help)
             Button("Welcome to Arpeggio") { navigator?.showOnboarding = true }
                 .disabled(navigator == nil)
         }
         CommandGroup(after: .newItem) {
             Button("New Message…") { navigator?.prompt = .message }
-                .keyboardShortcut("n", modifiers: [.command, .shift])
+                .keyboardShortcut(.newMessage)
                 .disabled(navigator == nil)
             Button("Browse User…") { navigator?.prompt = .browse }
-                .keyboardShortcut("b", modifiers: [.command, .shift])
+                .keyboardShortcut(.browseUser)
                 .disabled(navigator == nil || !connected)
         }
         CommandMenu("Network") {
             Button("Find…") { navigator?.focusSearch() }
-                .keyboardShortcut("f")
+                .keyboardShortcut(.find)
                 .disabled(navigator == nil)
             Button("Go to…") { navigator?.showPalette = true }
-                .keyboardShortcut("k")
+                .keyboardShortcut(.goTo)
                 .disabled(navigator == nil)
             Divider()
             if connected {
                 Button("Disconnect") { if let model { Task { await model.disconnect() } } }
-                    .keyboardShortcut("d", modifiers: [.command, .option])
+                    .keyboardShortcut(.disconnect)
             } else {
                 Button("Connect…") { navigator?.showLogin = true }
-                    .keyboardShortcut("l", modifiers: [.command, .option])
+                    .keyboardShortcut(.connect)
                     .disabled(navigator == nil || model?.connection.isBusy == true)
             }
             Button("Sign Out…") { navigator?.confirmSignOut = true }
@@ -54,18 +108,19 @@ struct ArpeggioCommands: Commands {
                 .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
                 .disabled(navigator?.section != .search)
             Button("Clear Search") { model?.clearSearch() }
-                .keyboardShortcut(.delete, modifiers: [.command, .shift])
+                .keyboardShortcut(.clearSearch)
                 .disabled(navigator?.section != .search || (model?.results.isEmpty != false && model?.query.isEmpty != false))
             Divider()
             Button("Rescan Shared Folders") { if let model { Task { await model.rescanShares() } } }
                 .disabled(model == nil || model?.indexing == true)
             Button(model?.downloadsSuspended == true ? "Resume Downloads" : "Pause Downloads") {
                 if let model { Task { await model.setTransfersSuspended(upload: false, !model.downloadsSuspended) } }
-            }.keyboardShortcut("p", modifiers: [.command, .option]).disabled(model == nil)
+            }.keyboardShortcut(.pauseDownloads).disabled(model == nil)
             Button(model?.uploadsSuspended == true ? "Resume Uploads" : "Pause Uploads") {
                 if let model { Task { await model.setTransfersSuspended(upload: true, !model.uploadsSuspended) } }
-            }.keyboardShortcut("p", modifiers: [.command, .option, .shift]).disabled(model == nil)
+            }.keyboardShortcut(.pauseUploads).disabled(model == nil)
         }
+        CommandMenu("Playback") { PlaybackMenu(model: model) }
         CommandGroup(before: .sidebar) {
             ForEach(SidebarSection.allCases) { section in
                 Button(section.title) { navigator?.go(section) }
@@ -74,6 +129,41 @@ struct ArpeggioCommands: Commands {
             }
             Divider()
         }
+    }
+}
+
+/// Transport commands for the shared player. Every item is disabled while nothing is loaded.
+struct PlaybackMenu: View {
+    let model: AppModel?
+
+    var body: some View {
+        let playback = model?.playback
+        let loaded = playback?.item != nil
+        let seekable = loaded && (playback?.duration ?? 0) > 0
+        let volume = playback?.volume ?? 1
+        Button(playback?.isPlaying == true ? "Pause" : "Play") { playback?.togglePlay() }
+            .keyboardShortcut(.playPause)
+            .disabled(!loaded || playback?.failure != nil)
+        Button("Stop") { if let model { Task { await model.stopPlayback() } } }
+            .keyboardShortcut(.stop)
+            .disabled(!loaded)
+        Divider()
+        Button("Back 15 Seconds") { playback?.skip(by: -15) }
+            .keyboardShortcut(.skipBack)
+            .disabled(!seekable)
+        Button("Forward 15 Seconds") { playback?.skip(by: 15) }
+            .keyboardShortcut(.skipForward)
+            .disabled(!seekable)
+        Divider()
+        Button("Volume Up") { playback?.changeVolume(by: 0.1) }
+            .keyboardShortcut(.volumeUp)
+            .disabled(!loaded || volume >= 1)
+        Button("Volume Down") { playback?.changeVolume(by: -0.1) }
+            .keyboardShortcut(.volumeDown)
+            .disabled(!loaded || volume <= 0)
+        Button(volume == 0 ? "Unmute" : "Mute") { playback?.volume = volume == 0 ? 1 : 0 }
+            .keyboardShortcut(.mute)
+            .disabled(!loaded)
     }
 }
 
@@ -99,6 +189,7 @@ struct HelpView: View {
                 topic("Status and Menu Bar", "Closing the window keeps Arpeggio connected and sharing. The menu bar icon is dimmed when offline, shows a moon when you're away and an arrow while someone downloads from you. Choose Available or Away from the account menu at the bottom of the sidebar or from the menu bar.")
                 topic("Statistics", "Statistics counts what you've downloaded and uploaded since you started using Arpeggio. Share or copy it as a picture from the toolbar.")
                 topic("Updates", "Arpeggio checks GitHub for new releases once a day and installs them only if they're signed by the same developer. Use Arpeggio › Check for Updates to check now.")
+                topic("Playback", "The Playback menu plays or pauses (⌃⌘P), stops (⌃⌘.), skips back or forward 15 seconds (⌃⌘← and ⌃⌘→) and changes volume (⌃⌘↑, ⌃⌘↓, ⌃⌘M). Media keys, headphone controls and Now Playing work while something is loaded. In short windows the player shrinks to one row.")
                 topic("Navigation", "⌘1 to ⌘9 jump to sections, ⌘0 opens Statistics. ⌘K opens the command palette. ⇧⌘N starts a new message, ⇧⌘B browses a user.")
                 Text("Arpeggio is not affiliated with Soulseek.").font(.footnote).foregroundStyle(.secondary)
             }
