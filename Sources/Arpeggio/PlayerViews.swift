@@ -8,11 +8,60 @@ import TransferEngine
 struct NowPlayingBar: View {
     let model: AppModel
     let navigator: Navigator
+    var layout = PlayerLayout(detailHeight: .infinity)
     private var playback: Playback { model.playback }
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         if let item = playback.item {
+            if layout.mode == .compact { compact(item) } else { regular(item) }
+        }
+    }
+
+    /// One row for short windows: cover, title, transport, scrubber and actions side by side.
+    private func compact(_ item: Playback.Item) -> some View {
+        GeometryReader { proxy in
+            let allocation = CompactPlayerAllocation(width: proxy.size.width)
+            let tags = playback.metadata
+            HStack(spacing: CompactPlayerAllocation.spacing) {
+                CoverArt(metadata: tags, image: playback.artwork, playing: playback.isPlaying && !playback.isWaiting, side: CompactPlayerAllocation.cover)
+                if allocation.showsInfo {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(tags.title ?? (item.fileName as NSString).deletingPathExtension)
+                            .font(.callout.weight(.semibold)).lineLimit(1).truncationMode(.tail)
+                        if let message = playback.failure ?? playback.status {
+                            Text(message).font(.caption)
+                                .foregroundStyle(playback.failure != nil ? AnyShapeStyle(.red) : AnyShapeStyle(Color.arpeggio))
+                                .lineLimit(1).truncationMode(.middle)
+                        } else {
+                            Text(tags.artist ?? item.subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
+                        }
+                    }
+                    .frame(width: allocation.info, alignment: .leading)
+                    .help([tags.title ?? item.fileName, tags.artist ?? item.subtitle, playback.failure ?? playback.status ?? ""].filter { !$0.isEmpty }.joined(separator: "\n"))
+                } else {
+                    Color.clear.frame(width: allocation.info)
+                }
+                transportButtons(playSize: 24, spacing: 14).frame(width: CompactPlayerAllocation.transport)
+                HStack(spacing: 6) {
+                    if allocation.showsTimes { Text(Self.clock(playback.currentTime)).frame(width: 40, alignment: .trailing) }
+                    scrubber
+                    if allocation.showsTimes { Text(Self.clock(playback.duration)).frame(width: 40, alignment: .leading) }
+                }
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(width: allocation.scrubber)
+                actions(item, compact: allocation.actions < 240).frame(width: allocation.actions, alignment: .trailing)
+            }
+            .padding(.horizontal, CompactPlayerAllocation.padding)
+            .frame(maxHeight: .infinity)
+        }
+        .frame(height: PlayerLayout.compactHeight)
+        .background(.bar)
+        .overlay(alignment: .top) { Divider() }
+    }
+
+    private func regular(_ item: Playback.Item) -> some View {
             GeometryReader { proxy in
                 let allocation = PlayerWidthAllocation(width: proxy.size.width)
                 VStack(spacing: 8) {
@@ -26,10 +75,39 @@ struct NowPlayingBar: View {
                 }
                 .padding(.horizontal, 16).padding(.vertical, 10)
             }
-            .frame(height: 160)
+            .frame(height: PlayerLayout.regularHeight)
             .background(.bar)
             .overlay(alignment: .top) { Divider() }
+    }
+
+    private func transportButtons(playSize: CGFloat, spacing: CGFloat) -> some View {
+        HStack(spacing: spacing) {
+            Button { playback.skip(by: -15) } label: { Image(systemName: "gobackward.15").font(.system(size: 15, weight: .medium)) }
+                .help("Back 15 seconds (⌃⌘←)")
+                .accessibilityLabel("Back 15 seconds")
+                .disabled(playback.duration <= 0)
+            Button { playback.togglePlay() } label: {
+                Image(systemName: playback.isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                    .font(.system(size: playSize))
+                    .foregroundStyle(Color.arpeggio)
+                    .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
+            }
+            .disabled(playback.failure != nil)
+            .help(playback.isPlaying ? "Pause (⌃⌘P)" : "Play (⌃⌘P)")
+            .accessibilityLabel(playback.isPlaying ? "Pause" : "Play")
+            Button { playback.skip(by: 15) } label: { Image(systemName: "goforward.15").font(.system(size: 15, weight: .medium)) }
+                .help("Forward 15 seconds (⌃⌘→)")
+                .accessibilityLabel("Forward 15 seconds")
+                .disabled(playback.duration <= 0)
         }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+    }
+
+    private var scrubber: some View {
+        Scrubber(progress: playback.duration > 0 ? playback.currentTime / playback.duration : 0,
+                 buffered: playback.bufferedFraction, duration: playback.duration,
+                 waiting: playback.isWaiting) { playback.seek(toFraction: $0) }
     }
 
     private func info(_ item: Playback.Item, chips: Bool) -> some View {
@@ -67,28 +145,10 @@ struct NowPlayingBar: View {
 
     private var transport: some View {
         VStack(spacing: 4) {
-            HStack(spacing: 22) {
-                Button { playback.skip(by: -15) } label: { Image(systemName: "gobackward.15").font(.system(size: 15, weight: .medium)) }
-                    .help("Back 15 seconds")
-                Button { playback.togglePlay() } label: {
-                    Image(systemName: playback.isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                        .font(.system(size: 32))
-                        .foregroundStyle(Color.arpeggio)
-                        .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
-                }
-                .disabled(playback.failure != nil)
-                .help(playback.isPlaying ? "Pause" : "Play")
-                .accessibilityLabel(playback.isPlaying ? "Pause" : "Play")
-                Button { playback.skip(by: 15) } label: { Image(systemName: "goforward.15").font(.system(size: 15, weight: .medium)) }
-                    .help("Forward 15 seconds")
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
+            transportButtons(playSize: 32, spacing: 22)
             HStack(spacing: 8) {
                 Text(Self.clock(playback.currentTime)).frame(width: 42, alignment: .trailing)
-                Scrubber(progress: playback.duration > 0 ? playback.currentTime / playback.duration : 0,
-                         buffered: playback.bufferedFraction, duration: playback.duration,
-                         waiting: playback.isWaiting) { playback.seek(toFraction: $0) }
+                scrubber
                 Text(Self.clock(playback.duration)).frame(width: 42, alignment: .leading)
             }
             .font(.caption.monospacedDigit())
@@ -114,7 +174,9 @@ struct NowPlayingBar: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
-                .help(playback.volume == 0 ? "Unmute" : "Mute")
+                .help(playback.volume == 0 ? "Unmute (⌃⌘M)" : "Mute (⌃⌘M)")
+                .accessibilityLabel(playback.volume == 0 ? "Unmute" : "Mute")
+                .accessibilityValue("Volume \(Int(playback.volume * 100)) percent")
                 .contextMenu {
                     ForEach([0.25, 0.5, 0.75, 1.0], id: \.self) { level in
                         Button("Volume \(Int(level * 100))%") { playback.volume = Float(level) }
@@ -182,6 +244,7 @@ private struct CoverArt: View {
     let metadata: TrackMetadata
     let image: CGImage?
     let playing: Bool
+    var side: CGFloat = 58
     @State private var expanded = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -193,14 +256,14 @@ private struct CoverArt: View {
                 } else {
                     LinearGradient(colors: [Color.arpeggio, Color.arpeggio.opacity(0.5)], startPoint: .topLeading, endPoint: .bottomTrailing)
                     Image(systemName: "waveform")
-                        .font(.system(size: 22, weight: .semibold))
+                        .font(.system(size: side * 0.38, weight: .semibold))
                         .foregroundStyle(.white)
                         .symbolEffect(.variableColor.iterative, options: .repeating, isActive: playing && !reduceMotion)
                 }
             }
-            .frame(width: 58, height: 58)
-            .clipShape(.rect(cornerRadius: 9))
-            .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(.primary.opacity(0.08)))
+            .frame(width: side, height: side)
+            .clipShape(.rect(cornerRadius: side * 0.155))
+            .overlay(RoundedRectangle(cornerRadius: side * 0.155).strokeBorder(.primary.opacity(0.08)))
             .shadow(color: .black.opacity(0.18), radius: 4, y: 2)
             .animation(reduceMotion ? nil : .easeOut(duration: 0.3), value: image != nil)
         }
@@ -294,6 +357,8 @@ private struct Scrubber: View {
 struct NoticeToast: View {
     let model: AppModel
     let navigator: Navigator
+    /// Measured player height plus a gap, from `ToastGeometry`.
+    var bottomPadding: Double = ToastGeometry.gap
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -328,7 +393,7 @@ struct NoticeToast: View {
                 .accessibilityElement(children: .combine)
             }
         }
-        .padding(.bottom, model.playback.item == nil ? 18 : 178)
+        .padding(.bottom, bottomPadding)
         .animation(reduceMotion ? .default : .spring(duration: 0.4, bounce: 0.3), value: model.notice?.id)
         .allowsHitTesting(model.notice != nil)
     }
