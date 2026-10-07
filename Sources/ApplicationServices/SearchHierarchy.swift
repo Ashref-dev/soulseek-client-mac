@@ -40,7 +40,7 @@ public struct ResultHierarchy: Sendable {
     public var tracks: [SearchResult.ID: SearchResult] = [:]
     public init() {}
 
-    public static func folderID(user: String, path: String) -> String { user + "\u{1F}" + path }
+    public static func folderID(user: String, path: String) -> String { SearchIdentity.key(user: user, path: path) }
 
     public nonisolated static func make(_ rows: [SearchResult]) throws -> Self {
         try Task.checkCancellation()

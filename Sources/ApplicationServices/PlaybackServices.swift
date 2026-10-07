@@ -16,7 +16,7 @@ public struct Notice: Identifiable, Equatable, Sendable {
 }
 
 extension AppModel {
-    public static func downloadKey(user: String, path: String) -> String { user + "\u{1F}" + path }
+    public static func downloadKey(user: String, path: String) -> String { SearchIdentity.key(user: user, path: path) }
 
     public func downloadState(user: String, path: String) -> Transfer? { downloadIndex[Self.downloadKey(user: user, path: path)] }
 

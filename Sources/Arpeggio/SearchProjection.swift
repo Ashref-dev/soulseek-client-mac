@@ -27,7 +27,7 @@ struct SearchProjection: Sendable {
         if grouping == .none { return Self(rows: rows, groups: [ResultGroup(id: "all", title: "", items: rows)], formats: formats) }
         var keys: [String] = []; var buckets: [String: [SearchResult]] = [:]
         for row in rows {
-            let key = grouping == .user ? row.user : row.user + "\0" + row.folder
+            let key = grouping == .user ? row.user : SearchIdentity.key(user: row.user, path: row.folder)
             if buckets[key] == nil { keys.append(key) }
             buckets[key, default: []].append(row)
         }

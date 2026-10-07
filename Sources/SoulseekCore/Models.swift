@@ -21,7 +21,7 @@ public struct SharedFile: Codable, Hashable, Sendable, Identifiable {
 }
 
 public struct SearchResult: Codable, Hashable, Sendable, Identifiable {
-    public var id: String { user + "\0" + file.path }
+    public var id: String { SearchIdentity.key(user: user, path: file.path) }
     public let user: String
     public let file: SharedFile
     public let freeSlot: Bool
