@@ -1,9 +1,19 @@
 import Foundation
 import Network
 
+public enum ListeningPortError: Error, LocalizedError, Sendable {
+    case inUse(UInt16), unavailable(UInt16)
+    public var errorDescription: String? {
+        switch self {
+        case .inUse(let port): "TCP listening port \(port) is already in use. Only one app can listen on a port at a time. Quit the other client or review Settings › Network; Arpeggio will not change your port automatically."
+        case .unavailable(let port): "TCP listening port \(port) is unavailable. Review Settings › Network and your local firewall; Arpeggio will not change your port automatically."
+        }
+    }
+}
+
 extension SoulseekSession {
     func startListener(port: UInt16) async throws {
-        guard port >= 1024, let endpoint = NWEndpoint.Port(rawValue: port) else { throw ProtocolError.invalid("Choose a listening port between 1024 and 65535 in Settings › Account.") }
+        guard port >= 1024, let endpoint = NWEndpoint.Port(rawValue: port) else { throw ProtocolError.invalid("Choose a listening port between 1024 and 65535 in Settings › Network.") }
         let listener = try NWListener(using: .tcp, on: endpoint)
         let attempt = generation
         listener.newConnectionHandler = { [weak self] connection in
@@ -14,9 +24,10 @@ extension SoulseekSession {
             listener.stateUpdateHandler = { state in
                 switch state {
                 case .ready: listener.stateUpdateHandler = nil; ready.resume()
-                case .failed:
+                case .failed(let error):
                     listener.stateUpdateHandler = nil; listener.cancel()
-                    ready.resume(throwing: ProtocolError.invalid("Listening port \(port) is unavailable. Choose a different port in Settings › Account."))
+                    let failure: ListeningPortError = error == .posix(.EADDRINUSE) ? .inUse(port) : .unavailable(port)
+                    ready.resume(throwing: failure)
                 case .cancelled: listener.stateUpdateHandler = nil; ready.resume(throwing: CancellationError())
                 default: break
                 }

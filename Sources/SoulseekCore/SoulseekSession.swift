@@ -121,12 +121,13 @@ public actor SoulseekSession {
                 }
             }
         } catch {
-            let message = error is ProtocolError || error is CancellationError ? error.localizedDescription : "Couldn’t connect to \(host):\(port). Check the configured server and your network connection."
+            let message = error is ProtocolError || error is CancellationError || error is ListeningPortError ? error.localizedDescription : "Couldn’t connect to \(host):\(port). Check the configured server and your network connection."
             if attempt == generation {
                 await disconnect()
                 await emit(.diagnostic("Connection detail: \(error.localizedDescription)"))
                 await emit(.state(.failed(message)))
             }
+            if let failure = error as? ListeningPortError { throw failure }
             throw ProtocolError.invalid(message)
         }
     }
