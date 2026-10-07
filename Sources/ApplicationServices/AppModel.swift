@@ -229,6 +229,14 @@ public final class AppModel {
                 if self.shareWatcher == nil, !self.settings.sharedFolders.isEmpty { await self.rescanShares() }
             }
         }
+        if storageReady, !shuttingDown {
+            do {
+                try UpdateLaunchReceipt.acknowledgeIfRequested()
+                if let detail = try await UpdateLaunchReceipt.archivalNoticeIfRequested() {
+                    notice = Notice(title: "Update recovery", detail: detail, symbol: "exclamationmark.triangle")
+                }
+            } catch { log("Update receipt: \(error.localizedDescription)") }
+        }
     }
     public func saveSettings() async {
         guard !shuttingDown, settingsRecovery == nil else { return }
