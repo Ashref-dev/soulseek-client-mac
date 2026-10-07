@@ -40,9 +40,16 @@ extension AppModel {
             } else if let id = wishlistTokens[token], let index = wishlist.firstIndex(where: { $0.id == id }) {
                 var entry = wishlist[index]
                 guard entry.enabled else { return }
-                let previous = entry.seen.count
-                for item in incoming where entry.seen.count < 20_000 { entry.seen.insert(item.id) }
-                let added = entry.seen.count - previous
+                var added = 0
+                for item in incoming {
+                    let key = item.id
+                    if let legacy = SearchIdentity.legacyWishlistKey(user: item.user, path: item.file.path),
+                       entry.seen.remove(legacy) != nil {
+                        entry.seen.insert(key)
+                    } else if entry.seen.count < 20_000, entry.seen.insert(key).inserted {
+                        added += 1
+                    }
+                }
                 entry.matches += added
                 await saveWish(entry)
                 if added > 0, wishlist.contains(where: { $0.id == id && $0.enabled }) {
