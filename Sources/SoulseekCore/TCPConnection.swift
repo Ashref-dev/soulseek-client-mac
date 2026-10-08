@@ -112,6 +112,7 @@ public actor FramedConnection {
     public func exact(_ count: Int, timeout: Int? = nil) async throws -> Data {
         guard count >= 0, count <= 256 * 1024 * 1024 else { throw ProtocolError.oversized }
         while buffer.count < count { buffer.append(try await socket.receive(maximum: min(65_536, count - buffer.count), timeout: timeout)) }
+        if buffer.count == count { defer { buffer = Data() }; return buffer }
         let result = Data(buffer.prefix(count))
         buffer.removeFirst(count); return result
     }

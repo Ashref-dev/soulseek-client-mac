@@ -52,6 +52,7 @@ public final class AppModel {
     public var activeConversation: String?
     public var notice: Notice?
     public internal(set) var downloadIndex: [String: Transfer] = [:]
+    @ObservationIgnored let downloadStates = DownloadStateIndex()
     public internal(set) var awayNow = false
     public internal(set) var profilePicture: Data?
     public internal(set) var statistics = TransferStatistics()
@@ -69,6 +70,8 @@ public final class AppModel {
     public let transferEngine: TransferEngine
     @ObservationIgnored var eventTask: Task<Void, Never>?
     @ObservationIgnored var transferTask: Task<Void, Never>?
+    @ObservationIgnored var lastStatisticsRead = ContinuousClock.now - .seconds(10)
+    @ObservationIgnored var trailingStatisticsRead: Task<Void, Never>?
     @ObservationIgnored var batchTask: Task<Void, Never>?
     @ObservationIgnored var wishlistTask: Task<Void, Never>?
     @ObservationIgnored var reconnectTask: Task<Void, Never>?
@@ -105,6 +108,7 @@ public final class AppModel {
     @ObservationIgnored var statisticsDirty = false
     @ObservationIgnored var statisticsTask: Task<Void, Never>?
     @ObservationIgnored var receivedBuffer: [ReceivedSearch] = []
+    @ObservationIgnored var receivedPendingTotal = 0
     @ObservationIgnored var receivedFlushTask: Task<Void, Never>?
     @ObservationIgnored var portMapper: PortMapper?
     @ObservationIgnored var updateTask: Task<Void, Never>?
@@ -188,11 +192,23 @@ public final class AppModel {
                 guard let self else { return }
                 let previous = Set(self.transfers.filter { $0.status == .completed }.map(\.id))
                 self.transfers = transfers
-                await self.ingestStatistics(transfers)
+                let finished = transfers.filter { !$0.upload && !$0.isPreview && $0.status == .completed && !previous.contains($0.id) }
+                let newlyCompleted = transfers.contains { $0.status == .completed && !previous.contains($0.id) }
+                if newlyCompleted || self.lastStatisticsRead.duration(to: .now) >= .seconds(1) {
+                    self.trailingStatisticsRead?.cancel(); self.trailingStatisticsRead = nil
+                    self.lastStatisticsRead = .now
+                    await self.ingestStatistics(transfers)
+                } else if self.trailingStatisticsRead == nil {
+                    self.trailingStatisticsRead = Task { [weak self] in
+                        do { try await Task.sleep(for: .milliseconds(1500)) } catch { return }
+                        guard let self else { return }
+                        self.trailingStatisticsRead = nil; self.lastStatisticsRead = .now
+                        await self.ingestStatistics(self.transfers)
+                    }
+                }
                 self.indexDownloads(transfers)
                 self.playback.refresh(transfers)
                 self.refreshDocumentPreview(transfers)
-                let finished = transfers.filter { !$0.upload && !$0.isPreview && $0.status == .completed && !previous.contains($0.id) }
                 if let first = finished.first { await self.notify(key: "downloads", title: "Download finished", text: first.file.name, minimumInterval: 5) }
                 if !finished.isEmpty, self.settings.autoClearDownloads == true, self.playback.item?.transferID.map({ id in finished.contains { $0.id == id } }) != true {
                     Task { await transferEngine.clearFinished(upload: false) }
@@ -271,7 +287,7 @@ public final class AppModel {
         cancelExternalPortCheck()
         for task in uploadRequestTasks.values { task.cancel() }
         uploadRequestTasks.removeAll(); uploadRequestUsers.removeAll()
-        idleTask?.cancel(); statisticsTask?.cancel(); updateTask?.cancel(); receivedFlushTask?.cancel()
+        idleTask?.cancel(); statisticsTask?.cancel(); trailingStatisticsRead?.cancel(); updateTask?.cancel(); receivedFlushTask?.cancel()
         await abandonCurrentPreview(); playback.stop()
         await removePortMapping()
         shareChangeTask?.cancel(); shareWatcher?.close(); shareWatcher = nil

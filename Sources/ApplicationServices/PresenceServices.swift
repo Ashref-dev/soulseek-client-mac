@@ -95,7 +95,7 @@ extension AppModel {
     }
 
     func recordReceivedSearch(user: String, query: String, results: Int) {
-        receivedSearchTotal += 1
+        receivedPendingTotal += 1
         receivedBuffer.append(ReceivedSearch(user: user, query: String(query.prefix(200)), results: results, date: Date()))
         if receivedBuffer.count > 300 { receivedBuffer.removeFirst(receivedBuffer.count - 300) }
         guard receivedFlushTask == nil else { return }
@@ -103,6 +103,7 @@ extension AppModel {
             try? await Task.sleep(for: .seconds(1))
             guard let self else { return }
             self.receivedSearches = Array((self.receivedBuffer.reversed() + self.receivedSearches).prefix(300))
+            self.receivedSearchTotal += self.receivedPendingTotal; self.receivedPendingTotal = 0
             self.receivedBuffer.removeAll(); self.receivedFlushTask = nil
         }
     }
@@ -111,7 +112,7 @@ extension AppModel {
 
     func ingestStatistics(_ transfers: [Transfer]) async {
         do {
-            if let totals = try await database.get(TransferStatistics.self, collection: "statistics", id: "main") { statistics = totals }
+            if let totals = try await database.get(TransferStatistics.self, collection: "statistics", id: "main"), totals != statistics { statistics = totals }
         } catch { log("storage error: Saved statistics are unavailable; existing totals have been preserved.") }
     }
 
