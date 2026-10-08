@@ -48,6 +48,14 @@ private struct GeneralSettings: View {
                 }
                 if let loginError { Text(loginError).font(.caption).foregroundStyle(.secondary) }
                 Toggle("Show Arpeggio in the menu bar", isOn: Binding(get: { model.settings.showsMenuBarIcon }, set: { model.settings.menuBarIcon = $0 }))
+                Picker("Menu bar icon", selection: Binding(get: { model.settings.menuBarIconStyle }, set: { model.settings.menuBarIconStyle = $0 })) {
+                    ForEach(MenuBarIconStyle.allCases, id: \.self) { style in
+                        Label { Text(style.title) } icon: { Image(nsImage: MenuBarGlyph.image(.available, style: style)).renderingMode(style == .arpeggio ? .template : .original) }
+                            .tag(style)
+                    }
+                }
+                .pickerStyle(.radioGroup)
+                .disabled(!model.settings.showsMenuBarIcon)
                 Toggle("Hide the Dock icon while the window is closed", isOn: Binding(get: { model.settings.hideDockWhenClosed ?? false }, set: { model.settings.hideDockWhenClosed = $0 }))
                     .disabled(!model.settings.showsMenuBarIcon)
             } header: {

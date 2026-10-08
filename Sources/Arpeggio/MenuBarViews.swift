@@ -5,11 +5,16 @@ import ArpeggioServices
 struct MenuBarLabel: View {
     let model: AppModel
     let bootstrap: Bootstrap
-    @State private var status = MenuBarStatus()
+    @State private var status: MenuBarStatus
+
+    init(model: AppModel, bootstrap: Bootstrap) {
+        self.model = model; self.bootstrap = bootstrap
+        _status = State(initialValue: MenuBarStatus(style: model.settings.menuBarIconStyle))
+    }
 
     var body: some View {
         let state = status.state
-        Image(nsImage: MenuBarGlyph.image(state))
+        Image(nsImage: MenuBarGlyph.image(state, style: status.style))
             .accessibilityLabel(state.accessibilityLabel)
             .task { await bootstrap.start(model) }
             .task { await status.follow(model) }

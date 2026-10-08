@@ -2,6 +2,7 @@ import SwiftUI
 import Observation
 import ArpeggioServices
 import TransferEngine
+import Persistence
 
 /// What the menu bar icon shows. It depends only on the connection, Away, and whether bytes are moving in
 /// either direction, so the icon redraws when one of those changes and never on speed or progress ticks.
@@ -47,10 +48,15 @@ enum MenuBarState: CaseIterable, Hashable, Sendable {
 @MainActor @Observable
 final class MenuBarStatus {
     private(set) var state = MenuBarState.offline
+    /// The chosen icon style, written only when it changes, so other settings never redraw the label.
+    private(set) var style: MenuBarIconStyle
+
+    init(style: MenuBarIconStyle = AppSettings().menuBarIconStyle) { self.style = style }
 
     func follow(_ model: AppModel) async {
-        for await next in Observations({ MenuBarState(model) }) where next != state {
-            state = next
+        for await next in Observations({ (state: MenuBarState(model), style: model.settings.menuBarIconStyle) }) {
+            if next.state != state { state = next.state }
+            if next.style != style { style = next.style }
         }
     }
 }
@@ -153,5 +159,14 @@ final class MenuBarRoute {
     func take() -> Request? {
         defer { pending = nil }
         return pending
+    }
+}
+
+extension MenuBarIconStyle {
+    var title: String {
+        switch self {
+        case .classicBird: "Classic bird"
+        case .arpeggio: "Arpeggio"
+        }
     }
 }

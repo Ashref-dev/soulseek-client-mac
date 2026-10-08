@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import ArpeggioServices
+import Persistence
 
 @main
 struct ArpeggioApp: App {
@@ -50,7 +51,7 @@ struct ArpeggioApp: App {
             if let model {
                 MenuBarLabel(model: model, bootstrap: bootstrap)
             } else {
-                Image(nsImage: MenuBarGlyph.image(.offline)).accessibilityLabel(MenuBarState.offline.accessibilityLabel)
+                Image(nsImage: MenuBarGlyph.image(.offline, style: AppSettings().menuBarIconStyle)).accessibilityLabel(MenuBarState.offline.accessibilityLabel)
             }
         }
         .menuBarExtraStyle(.window)

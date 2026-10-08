@@ -1,5 +1,9 @@
 import Foundation
 
+public enum MenuBarIconStyle: String, CaseIterable, Sendable {
+    case classicBird, arpeggio
+}
+
 public struct AppSettings: Codable, Sendable {
     public static let soulseekHost = "server.slsknet.org"
     public static let soulseekPort: UInt16 = 2242
@@ -28,6 +32,8 @@ public struct AppSettings: Codable, Sendable {
     public var profileDescription: String?
     public var portMapping: Bool?
     public var menuBarIcon: Bool?
+    /// Raw MenuBarIconStyle. Stored as text so an unknown value from a newer build still decodes.
+    public var menuBarStyle: String?
     public var hideDockWhenClosed: Bool?
     public var queuedUploadsPerUser: Int?
     public var autoClearDownloads: Bool?
@@ -56,6 +62,10 @@ public struct AppSettings: Codable, Sendable {
         return text.isEmpty ? Self.defaultSharingMessage : text
     }
     public var showsMenuBarIcon: Bool { menuBarIcon ?? true }
+    public var menuBarIconStyle: MenuBarIconStyle {
+        get { menuBarStyle.flatMap(MenuBarIconStyle.init(rawValue:)) ?? .classicBird }
+        set { menuBarStyle = newValue.rawValue }
+    }
     public var uploadQueueLimit: Int { max(0, queuedUploadsPerUser ?? 200) }
     public var checksForUpdates: Bool { checkForUpdates ?? true }
     /// Shared statistics pictures and summaries leave the username out unless the person opts in.
