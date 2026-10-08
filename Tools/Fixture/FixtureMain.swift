@@ -12,8 +12,12 @@ struct FixtureMain {
         catch { FileHandle.standardError.write(Data("ArpeggioFixture: \(error.localizedDescription)\n".utf8)); exit(1) }
     }
     @MainActor static func run() async throws {
+        if CommandLine.arguments.count == 3, CommandLine.arguments[1] == "--burst" {
+            try await BurstFixture.run(root: URL(fileURLWithPath: CommandLine.arguments[2]))
+            return
+        }
         if CommandLine.arguments.contains("--help") {
-            print("ArpeggioFixture: a loopback-only Soulseek test server and independent Swift peer. No live network accounts are used. Runs for ten minutes; Ctrl-C stops it.")
+            print("ArpeggioFixture: a loopback-only Soulseek test server and independent Swift peer. No live network accounts are used. Runs for ten minutes; Ctrl-C stops it. --burst TEMP_ROOT runs 80 peers with 5040 results, three 384 MiB files and generated FLAC; create TEMP_ROOT/stop to shut down.")
             return
         }
         guard CommandLine.arguments.count == 1 else { throw ProtocolError.invalid("Unknown argument. Use --help.") }
