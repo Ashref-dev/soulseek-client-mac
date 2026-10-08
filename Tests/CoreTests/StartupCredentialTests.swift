@@ -175,6 +175,26 @@ import ProtocolFixtures
         await server.stop()
     }
 
+    /// At login the network is often not ready. A failed first attempt must keep retrying, not stay offline.
+    @Test(.timeLimit(.minutes(1))) @MainActor func failedConnectionAtLaunchSchedulesARetry() async throws {
+        let root = temporaryRoot(); defer { try? FileManager.default.removeItem(at: root) }
+        let model = try AppModel(dataDirectory: root)
+        model.settings.username = "isolated-fixture"
+        model.settings.server = "127.0.0.1"; model.settings.port = try unusedPort()
+        model.settings.listeningPort = try unusedPort()
+        model.settings.notifications = false; model.settings.portMapping = false
+        model.settings.downloadDirectory = root.appendingPathComponent("downloads").path
+        model.credentialLookup = { _ in "fixture-only" }
+        let gate = RaceGate()
+        model.reconnectClock = ReconnectClock(now: { Date(timeIntervalSince1970: 1000) }, sleep: { _ in await gate.wait(); try Task.checkCancellation() })
+        await model.start(); await model.connectAtLaunch()
+        try await raceWait { await gate.arrivals == 1 }
+        #expect(model.reconnectAllowed)
+        #expect(model.reconnectSchedule.remaining(at: Date(timeIntervalSince1970: 1000)) == 5)
+        await model.shutdown()
+        await gate.release()
+    }
+
     @Test @MainActor func disabledAutomaticSignInDoesNotReadCredentials() async throws {
         let root = temporaryRoot(); defer { try? FileManager.default.removeItem(at: root) }
         let model = try AppModel(dataDirectory: root)

@@ -97,7 +97,7 @@ public actor SoulseekSession {
                 case "INVALIDVERSION": message = "The server rejected Arpeggio’s client version. Please report this compatibility issue."
                 default: message = "Soulseek rejected sign-in: \(String(greeting.prefix(128)))"
                 }
-                throw ProtocolError.invalid(message)
+                throw LoginRejected(message: message)
             }
             var wait = WireWriter(); wait.uint(UInt32(listeningPort))
             try await connection.send(code: 2, payload: wait.data)
@@ -121,13 +121,14 @@ public actor SoulseekSession {
                 }
             }
         } catch {
-            let message = error is ProtocolError || error is CancellationError || error is ListeningPortError ? error.localizedDescription : "Couldn’t connect to \(host):\(port). Check the configured server and your network connection."
+            let message = error is ProtocolError || error is CancellationError || error is ListeningPortError || error is LoginRejected ? error.localizedDescription : "Couldn’t connect to \(host):\(port). Check the configured server and your network connection."
             if attempt == generation {
                 await disconnect()
                 await emit(.diagnostic("Connection detail: \(error.localizedDescription)"))
                 await emit(.state(.failed(message)))
             }
             if let failure = error as? ListeningPortError { throw failure }
+            if let rejected = error as? LoginRejected { throw rejected }
             throw ProtocolError.invalid(message)
         }
     }

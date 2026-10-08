@@ -363,7 +363,11 @@ public final class AppModel {
             guard revision == loginRevision, !shuttingDown else { return }
             mapListeningPort()
             await requestNotifications()
-        } catch { if revision == loginRevision, !shuttingDown { self.error = error.localizedDescription } }
+        } catch {
+            guard revision == loginRevision, !shuttingDown else { return }
+            self.error = error.localizedDescription
+            if error is LoginRejected { reconnectAllowed = false; cancelReconnect(reset: true) }
+        }
     }
     public func savedPassword() async -> String {
         let username = settings.username
@@ -382,7 +386,10 @@ public final class AppModel {
               account == (settings.username, settings.server, settings.port, settings.listeningPort, loginRevision) else { return }
         switch result {
         case .success(let password) where !password.isEmpty:
-            await login(password: password, remember: false)
+            // At login the network is often not up yet. Allow the normal reconnect backoff (and the retry when
+            // the network returns) for this first attempt too; a refused password still stops it.
+            intentionallyOffline = false; reconnectAllowed = true
+            await login(password: password, remember: false, automatic: true)
         case .success:
             error = "Automatic sign-in needs a saved password. Open Account and Server and Sign In with Remember password enabled. Your downloads and settings are still saved."
         case .failure(let failure):

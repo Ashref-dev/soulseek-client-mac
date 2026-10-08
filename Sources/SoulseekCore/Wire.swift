@@ -13,6 +13,14 @@ public enum ProtocolError: Error, LocalizedError, Sendable {
     }
 }
 
+/// The server answered the login and refused it (wrong password, invalid name, full server). Retrying the
+/// same credentials automatically cannot help, unlike a network failure.
+public struct LoginRejected: Error, LocalizedError, Sendable {
+    public let message: String
+    public init(message: String) { self.message = message }
+    public var errorDescription: String? { message }
+}
+
 public struct WireWriter: Sendable {
     public private(set) var data = Data()
     public init() {}
