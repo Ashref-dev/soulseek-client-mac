@@ -7,7 +7,7 @@ public struct IndexedFile: Sendable {
     public let localURL: URL
     public let buddyOnly: Bool
     public let modified: Date?
-    let searchKey: String
+    let localPath: String
 }
 
 public struct ShareRootSummary: Sendable, Equatable {
@@ -34,6 +34,9 @@ public actor ShareIndex {
     public nonisolated let progress: AsyncStream<ShareScanProgress>
     private let progressContinuation: AsyncStream<ShareScanProgress>.Continuation
     private var files: [String: IndexedFile] = [:]
+    /// Word index answering the network's constant stream of searches without scanning every file.
+    private var entries: [IndexedFile] = []
+    private var postings: [String: [Int]] = [:]
     private var scanRevision: UInt64 = 0
     public private(set) var queryRootResolutions = 0
     public private(set) var metadataReads = 0
@@ -95,7 +98,7 @@ public actor ShareIndex {
                     }
                     let values = try url.resourceValues(forKeys: Set(keys))
                     if values.isSymbolicLink == true { enumerator.skipDescendants(); continue }
-                    guard values.isRegularFile == true, values.isReadable == true else { continue }
+                    guard values.isRegularFile == true, values.isReadable == true, url.pathExtension.lowercased() != "partial" else { continue }
                     status.filesProcessed += 1
                     if ContinuousClock.now - lastUpdate >= .milliseconds(100) {
                         status.folder = url.deletingLastPathComponent().path
@@ -125,7 +128,7 @@ public actor ShareIndex {
                     }
                     let file = SharedFile(path: path, size: size, attributes: attributes)
                     next[path] = IndexedFile(file: file, localURL: canonical, buddyOnly: privateShare,
-                                             modified: values.contentModificationDate, searchKey: path.lowercased())
+                                             modified: values.contentModificationDate, localPath: canonical.path)
                     total += size
                     summary.files += 1; summary.bytes += size; folderNames.insert(file.folder)
                     if AudioMetadata.isAudio(name: canonical.lastPathComponent) { summary.audioFiles += 1 }
@@ -137,6 +140,7 @@ public actor ShareIndex {
             return (files.count, files.values.reduce(0) { $0 + $1.file.size })
         }
         files = next; self.errors = errors
+        rebuildWordIndex()
         metadataHints.removeAll()
         self.summaries = summaries
         status.phase = .completed; progressContinuation.yield(status)
@@ -146,16 +150,52 @@ public actor ShareIndex {
         let roots = normalizedRoots(configuredFolders)
         return Dictionary(grouping: files.values.filter { allowed($0, privateAccess: allowPrivate, roots: roots) }.map(\.file), by: \.folder)
     }
+    /// Soulseek-style matching: every plain term must be a whole word of the shared path, `-term` excludes
+    /// files containing that word, and `*term` matches any word containing it.
     public func search(_ query: String, allowPrivate: Bool = false, limit: Int = 500, configuredFolders: [(URL, Bool)]? = nil) -> [SharedFile] {
-        let terms = query.lowercased().split(whereSeparator: \.isWhitespace).map(String.init)
-        guard !terms.isEmpty else { return [] }
-        let roots = normalizedRoots(configuredFolders)
-        return Array(files.values.lazy.filter { item in
-            self.allowed(item, privateAccess: allowPrivate, roots: roots) && terms.allSatisfy { term in
-                if term.hasPrefix("-") { return !item.searchKey.contains(term.dropFirst()) }
-                return item.searchKey.contains(term.replacingOccurrences(of: "*", with: ""))
+        var required: [[Int]] = [], excluded = Set<Int>()
+        for term in query.lowercased().split(whereSeparator: \.isWhitespace) {
+            if term.hasPrefix("-") {
+                for word in Self.words(term.dropFirst()) { excluded.formUnion(postings[word] ?? []) }
+            } else if term.hasPrefix("*") {
+                for part in Self.words(term.drop(while: { $0 == "*" })) {
+                    var matches = Set<Int>()
+                    for (word, list) in postings where word.contains(part) { matches.formUnion(list) }
+                    required.append(matches.sorted())
+                }
+            } else {
+                for word in Self.words(term) { required.append(postings[word] ?? []) }
             }
-        }.prefix(limit).map(\.file))
+        }
+        guard !required.isEmpty else { return [] }
+        required.sort { $0.count < $1.count }
+        var candidates = required[0]
+        for list in required.dropFirst() where !candidates.isEmpty { candidates = Self.intersect(candidates, list) }
+        let roots = normalizedRoots(configuredFolders)
+        var output: [SharedFile] = []
+        for index in candidates where !excluded.contains(index) {
+            guard output.count < limit else { break }
+            if allowed(entries[index], privateAccess: allowPrivate, roots: roots) { output.append(entries[index].file) }
+        }
+        return output
+    }
+    static func words<S: StringProtocol>(_ text: S) -> [String] {
+        text.lowercased().split { !($0.isLetter || $0.isNumber) }.map(String.init)
+    }
+    private static func intersect(_ a: [Int], _ b: [Int]) -> [Int] {
+        var output: [Int] = [], i = 0, j = 0
+        while i < a.count && j < b.count {
+            if a[i] == b[j] { output.append(a[i]); i += 1; j += 1 } else if a[i] < b[j] { i += 1 } else { j += 1 }
+        }
+        return output
+    }
+    private func rebuildWordIndex() {
+        entries = Array(files.values)
+        var next: [String: [Int]] = [:]
+        for (index, item) in entries.enumerated() {
+            for word in Set(Self.words(item.file.path)) { next[word, default: []].append(index) }
+        }
+        postings = next
     }
     public func resolve(_ path: String, allowPrivate: Bool = false, configuredFolders: [(URL, Bool)]? = nil) -> IndexedFile? {
         guard let item = files[path], allowed(item, privateAccess: allowPrivate, roots: normalizedRoots(configuredFolders)) else { return nil }
@@ -171,7 +211,7 @@ public actor ShareIndex {
     }
     private func allowed(_ item: IndexedFile, privateAccess: Bool, roots: [(String, Bool, Bool)]?) -> Bool {
         guard let roots else { return privateAccess || !item.buddyOnly }
-        let matches = roots.filter { item.localURL.path.hasPrefix($0.0) }
+        let matches = roots.filter { item.localPath.hasPrefix($0.0) }
         guard let specific = matches.max(by: { $0.0.count < $1.0.count }) else { return false }
         return specific.2 && (privateAccess || !specific.1)
     }
