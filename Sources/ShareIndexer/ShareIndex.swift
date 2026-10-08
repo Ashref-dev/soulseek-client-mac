@@ -171,6 +171,7 @@ public actor ShareIndex {
         required.sort { $0.count < $1.count }
         var candidates = required[0]
         for list in required.dropFirst() where !candidates.isEmpty { candidates = Self.intersect(candidates, list) }
+        guard candidates.contains(where: { !excluded.contains($0) }) else { return [] }
         let roots = normalizedRoots(configuredFolders)
         var output: [SharedFile] = []
         for index in candidates where !excluded.contains(index) {

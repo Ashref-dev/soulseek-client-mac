@@ -30,6 +30,10 @@ import ShareIndexer
         #expect(await names("-beatles").isEmpty)
         #expect(await names("nothing here").isEmpty)
         #expect(await names("   ").isEmpty)
+        let resolutions = await index.queryRootResolutions
+        #expect(await names("nothing here").isEmpty)
+        #expect(await names("together -flac").isEmpty)
+        #expect(await index.queryRootResolutions == resolutions)
     }
 
     @Test func busyDistributedSearchLoadIsCheap() async throws {
