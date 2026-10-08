@@ -46,54 +46,65 @@ private func render(_ presence: Presence, pixels: Int = 32) throws -> (CGImage, 
 
 @Suite struct BirdMarkTests {
     @Test func presenceMapsToPoseToneAndLabel() {
-        #expect(BirdState(presence: .available) == BirdState(pose: .extended, muted: false))
-        #expect(BirdState(presence: .away) == BirdState(pose: .folded, muted: false))
-        #expect(BirdState(presence: .offline) == BirdState(pose: .folded, muted: true))
+        #expect(BirdState(presence: .available) == BirdState(pose: .extended, offline: false))
+        #expect(BirdState(presence: .away) == BirdState(pose: .folded, offline: false))
+        #expect(BirdState(presence: .offline) == BirdState(pose: .folded, offline: true))
         #expect(BirdState(presence: .available).label == "Available")
         #expect(BirdState(presence: .away).label == "Away")
         #expect(BirdState(presence: .offline).label == "Offline")
     }
 
-    @Test func vectorGeometryStaysInsideTheUnitSquareAndSharesTheBody() {
-        let unit = CGRect(x: 0, y: 0, width: 1, height: 1)
-        let extended = BirdMark.path(.extended).boundingBoxOfPath, folded = BirdMark.path(.folded).boundingBoxOfPath
-        #expect(unit.insetBy(dx: 0.02, dy: 0.02).contains(extended))
-        #expect(unit.insetBy(dx: 0.02, dy: 0.02).contains(folded))
-        #expect(extended.minY < 0.1)
-        #expect(folded.minY > 0.3)
-        #expect(extended.height > folded.height * 1.4)
-        for point in [CGPoint(x: 0.48, y: 0.63), CGPoint(x: 0.66, y: 0.47), CGPoint(x: 0.12, y: 0.70)] {
-            #expect(BirdMark.path(.extended).contains(point))
-            #expect(BirdMark.path(.folded).contains(point))
-        }
-        let eye = CGPoint(x: 0.74, y: 0.41)
-        #expect(!BirdMark.path(.extended).contains(eye)); #expect(!BirdMark.path(.folded).contains(eye))
+    @Test func gridsMatchTheApprovedFilesExactly() throws {
+        let docs = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("docs/bird")
+        let available = try String(contentsOf: docs.appendingPathComponent("available.txt"), encoding: .utf8).split(separator: "\n").map(String.init)
+        let away = try String(contentsOf: docs.appendingPathComponent("away.txt"), encoding: .utf8).split(separator: "\n").map(String.init)
+        #expect(BirdMark.availableRows == available)
+        #expect(BirdMark.awayRows == away)
+        for grid in [BirdMark.extendedGrid, BirdMark.foldedGrid] { #expect(grid.width == 26); #expect(grid.height == 24) }
+        #expect(BirdMark.extendedGrid.filledCount == 239)
+        #expect(BirdMark.foldedGrid.filledCount == 149)
+        #expect(BirdMark.extendedGrid.enclosedHoles.count == 1)
+        #expect(BirdMark.foldedGrid.enclosedHoles.count == 6)
     }
 
-    @Test func availableSpreadsWingsAboveTheHeadAndAwayFoldsThem() throws {
+    @Test func halvedGridKeepsTheEyeAndNeverInventsInk() {
+        for pose in [BirdPose.extended, .folded] {
+            let full = BirdMark.grid(pose), half = BirdMark.half(pose)
+            #expect(half.width == 13); #expect(half.height == 12)
+            for y in 0..<12 { for x in 0..<13 where half[x, y] {
+                #expect([(0, 0), (1, 0), (0, 1), (1, 1)].contains { full[x * 2 + $0.0, y * 2 + $0.1] })
+            } }
+            #expect(!half[7, 2])
+        }
+        #expect(BirdMark.foldedHalf.filledCount < BirdMark.extendedHalf.filledCount)
+    }
+
+    @Test func rendersWholePixelCellsWithoutAntialiasing() throws {
+        for (pixels, cell) in [(52, 2), (26, 1), (16, 0)] {
+            let (_, image) = try render(.available, pixels: pixels)
+            for index in stride(from: 3, to: image.rgba.count, by: 4) { #expect(image.rgba[index] == 0 || image.rgba[index] == 255) }
+            #expect(image.inkedCount == (cell == 0 ? BirdMark.extendedHalf.filledCount : BirdMark.extendedGrid.filledCount * cell * cell))
+        }
+    }
+
+    @Test func availableSpreadsItsWingsAndAwayFoldsThem() throws {
         let (_, available) = try render(.available)
         let (_, away) = try render(.away)
         let (_, offline) = try render(.offline)
-        #expect(try #require(available.topInkRow) <= 3)
-        #expect(try #require(away.topInkRow) >= 9)
-        #expect(available.inkedRows(0..<9) > 40)
-        #expect(away.inkedRows(0..<9) == 0)
         #expect(available.inkedCount > away.inkedCount)
-        #expect(away.inkedCount > 150)
         #expect(offline.inkedCount == away.inkedCount)
-        for pixels in [available, away, offline] { #expect(pixels.borderIsClear) }
+        let wide = { (pixels: Pixels) in (0..<pixels.side).filter { x in (0..<pixels.side).contains { pixels.inked(x, $0) } }.count }
+        #expect(wide(available) > wide(away) + 8)
     }
 
-    @Test func purpleForPresenceAndQuietGreyOffline() throws {
+    @Test func purpleForPresenceAndRedOffline() throws {
         let purple = try render(.available).1.meanColor
-        #expect(purple.blue > purple.red); #expect(purple.red > purple.green)
         #expect(abs(purple.red - BrandTone.purple.red) < 0.02)
         #expect(abs(purple.blue - BrandTone.purple.blue) < 0.02)
-        #expect(max(purple.red, purple.green, purple.blue) - min(purple.red, purple.green, purple.blue) > 0.3)
         let away = try render(.away).1.meanColor
         #expect(abs(away.blue - purple.blue) < 0.02)
-        let grey = try render(.offline).1.meanColor
-        #expect(max(grey.red, grey.green, grey.blue) - min(grey.red, grey.green, grey.blue) < 0.05)
+        let red = try render(.offline).1.meanColor
+        #expect(red.red > 0.8); #expect(red.green < 0.3); #expect(red.blue < 0.3)
     }
 
     /// The bird is a separate presence mark: its silhouette must not resemble the Arpeggio logo.
@@ -121,6 +132,7 @@ private func render(_ presence: Presence, pixels: Int = 32) throws -> (CGImage, 
             let image = BirdGlyph.image(BirdState(presence: presence))
             #expect(!image.isTemplate)
             #expect(image.size == CGSize(width: 16, height: 16))
+            #expect(image === BirdGlyph.image(BirdState(presence: presence)))
             #expect(image.accessibilityDescription == BirdState(presence: presence).label)
         }
     }

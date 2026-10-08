@@ -3,27 +3,26 @@ import AppKit
 import CoreGraphics
 import ArpeggioServices
 
-/// The presence bird: an original geometric songbird built from ellipses, curves and a forked tail.
-/// Wings extended means Available, wings folded means Away, and a muted folded bird means offline.
-/// It marks presence only; the app icon and the menu bar icon stay the Arpeggio mark.
+/// The presence bird: the classic Soulseek pixel bird, upright. Wings open means Available, wings folded
+/// means Away, and a red folded bird means offline. The menu bar can show it too (Settings > General).
 enum BirdPose: Sendable, Equatable { case extended, folded }
 
 struct BirdState: Sendable, Equatable {
     let pose: BirdPose
-    let muted: Bool
+    let offline: Bool
 
-    init(pose: BirdPose, muted: Bool) { self.pose = pose; self.muted = muted }
+    init(pose: BirdPose, offline: Bool) { self.pose = pose; self.offline = offline }
 
     init(presence: Presence) {
         switch presence {
-        case .available: self.init(pose: .extended, muted: false)
-        case .away: self.init(pose: .folded, muted: false)
-        case .offline: self.init(pose: .folded, muted: true)
+        case .available: self.init(pose: .extended, offline: false)
+        case .away: self.init(pose: .folded, offline: false)
+        case .offline: self.init(pose: .folded, offline: true)
         }
     }
 
     var label: String {
-        switch (pose, muted) {
+        switch (pose, offline) {
         case (_, true): "Offline"
         case (.extended, false): "Available"
         case (.folded, false): "Away"
@@ -31,12 +30,134 @@ struct BirdState: Sendable, Equatable {
     }
 }
 
-/// Paths live in a unit square with y pointing down, facing right. Both poses share the body, head and tail,
-/// so switching state moves only the wings. The eye is a counter: fill with the nonzero rule after the unions.
+/// A bitmap of filled cells, row-major, y pointing down.
+struct PixelGrid: Sendable, Equatable {
+    let width: Int
+    let height: Int
+    let cells: [Bool]
+
+    init(rows: [String]) {
+        let width = rows.map(\.count).max() ?? 0
+        self.width = width
+        height = rows.count
+        cells = rows.flatMap { row in Array(row).map { $0 == "#" } + Array(repeating: false, count: width - row.count) }
+    }
+
+    init(width: Int, height: Int, cells: [Bool]) { self.width = width; self.height = height; self.cells = cells }
+
+    subscript(x: Int, y: Int) -> Bool { x >= 0 && y >= 0 && x < width && y < height && cells[y * width + x] }
+
+    var filledCount: Int { cells.filter { $0 }.count }
+
+    /// Empty cells not reachable from the border through empty cells (4-connected): the eye, the wing fold.
+    var enclosedHoles: Set<Int> {
+        var outside = Set<Int>(), queue: [Int] = []
+        for y in 0..<height { for x in 0..<width where (x == 0 || y == 0 || x == width - 1 || y == height - 1) && !self[x, y] {
+            if outside.insert(y * width + x).inserted { queue.append(y * width + x) }
+        } }
+        while let next = queue.popLast() {
+            let x = next % width, y = next / width
+            for (nx, ny) in [(x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)] where nx >= 0 && ny >= 0 && nx < width && ny < height && !self[nx, ny] {
+                if outside.insert(ny * width + nx).inserted { queue.append(ny * width + nx) }
+            }
+        }
+        return Set((0..<cells.count).filter { !cells[$0] && !outside.contains($0) })
+    }
+
+    /// Half resolution for 1x screens where a whole device pixel per cell does not fit. A 2x2 block is
+    /// filled when at least two of its cells are, unless it holds an enclosed hole, so the eye and the
+    /// wing fold survive the reduction.
+    func halved() -> PixelGrid {
+        let holes = enclosedHoles, w = (width + 1) / 2, h = (height + 1) / 2
+        var out = [Bool](repeating: false, count: w * h)
+        for by in 0..<h { for bx in 0..<w {
+            let block = [(bx * 2, by * 2), (bx * 2 + 1, by * 2), (bx * 2, by * 2 + 1), (bx * 2 + 1, by * 2 + 1)]
+            let count = block.filter { self[$0.0, $0.1] }.count
+            let hole = block.contains { $0.0 < width && $0.1 < height && holes.contains($0.1 * width + $0.0) }
+            out[by * w + bx] = count >= 2 && !hole
+        } }
+        return PixelGrid(width: w, height: h, cells: out)
+    }
+
+    /// Fills each cell as a `cell`-sized square from `origin`, in the context's current user space.
+    /// Callers pass device-pixel multiples so edges land on whole pixels; antialiasing is off.
+    func fill(in context: CGContext, origin: CGPoint, cell: CGFloat) {
+        context.saveGState()
+        context.setShouldAntialias(false)
+        for y in 0..<height { for x in 0..<width where self[x, y] {
+            context.addRect(CGRect(x: origin.x + CGFloat(x) * cell, y: origin.y + CGFloat(y) * cell, width: cell, height: cell))
+        } }
+        context.fillPath()
+        context.restoreGState()
+    }
+}
+
+/// The approved grids, identical to docs/bird/available.txt and away.txt (26 by 24, '#' filled).
 enum BirdMark {
+    static let availableRows = [
+        "...........#..............",
+        "...........###............",
+        ".........######...........",
+        "...........#####..........",
+        "...........###.##.........",
+        "...........######.........",
+        "#..........######.......##",
+        "#..........####.##....####",
+        "####.......####.....######",
+        ".########.######..#######.",
+        ".#######################..",
+        "..#####################...",
+        "..####################....",
+        "...##################.....",
+        "....################......",
+        ".....##############.......",
+        ".......###########........",
+        ".........########.........",
+        "..........######..........",
+        "..........#####...........",
+        ".........####.............",
+        "......######..............",
+        ".....#####................",
+        "........#.................",
+    ]
+    static let awayRows = [
+        "...........#..............",
+        "...........###............",
+        ".........######...........",
+        "...........#####..........",
+        "...........###.##.........",
+        "...........######.........",
+        "...........######.........",
+        "...........####.##........",
+        "..........#####...........",
+        ".........#######..........",
+        "........#########.........",
+        ".......####.######........",
+        ".......#####.#####........",
+        ".......######.####........",
+        "........######.###........",
+        "........#######.#.........",
+        ".........########.........",
+        ".........########.........",
+        "..........######..........",
+        "..........#####...........",
+        ".........####.............",
+        "......######..............",
+        ".....#####................",
+        "........#.................",
+    ]
+    static let extendedGrid = PixelGrid(rows: availableRows)
+    static let foldedGrid = PixelGrid(rows: awayRows)
+    static let extendedHalf = extendedGrid.halved()
+    static let foldedHalf = foldedGrid.halved()
+
+    static func grid(_ pose: BirdPose) -> PixelGrid { pose == .extended ? extendedGrid : foldedGrid }
+    static func half(_ pose: BirdPose) -> PixelGrid { pose == .extended ? extendedHalf : foldedHalf }
+
     nonisolated(unsafe) static let extended = make(.extended)
     nonisolated(unsafe) static let folded = make(.folded)
 
+    /// The grid as a vector path in a unit square, y down, centred; cells are squares.
     static func path(_ pose: BirdPose) -> CGPath { pose == .extended ? extended : folded }
 
     /// Maps the unit square onto the largest centred square inside `rect`.
@@ -51,78 +172,61 @@ enum BirdMark {
     }
 
     private static func make(_ pose: BirdPose) -> CGPath {
-        let body = ellipse(center: CGPoint(x: 0.48, y: 0.63), width: 0.50, height: 0.30, degrees: -22)
-        let head = CGPath(ellipseIn: CGRect(x: 0.587, y: 0.317, width: 0.236, height: 0.236), transform: nil)
-        let beak = CGMutablePath()
-        beak.move(to: CGPoint(x: 0.80, y: 0.385))
-        beak.addQuadCurve(to: CGPoint(x: 0.95, y: 0.44), control: CGPoint(x: 0.90, y: 0.40))
-        beak.addLine(to: CGPoint(x: 0.80, y: 0.48))
-        beak.closeSubpath()
-        let tail = CGMutablePath()
-        tail.addLines(between: [CGPoint(x: 0.34, y: 0.62), CGPoint(x: 0.08, y: 0.66), CGPoint(x: 0.15, y: 0.735),
-                                CGPoint(x: 0.10, y: 0.81), CGPoint(x: 0.36, y: 0.73)])
-        tail.closeSubpath()
-        var shape = body.union(head).union(beak).union(tail)
-        switch pose {
-        case .extended:
-            let near = CGMutablePath()
-            near.move(to: CGPoint(x: 0.62, y: 0.52))
-            near.addQuadCurve(to: CGPoint(x: 0.17, y: 0.08), control: CGPoint(x: 0.53, y: 0.15))
-            near.addQuadCurve(to: CGPoint(x: 0.36, y: 0.60), control: CGPoint(x: 0.20, y: 0.42))
-            near.closeSubpath()
-            let far = CGMutablePath()
-            far.move(to: CGPoint(x: 0.67, y: 0.49))
-            far.addQuadCurve(to: CGPoint(x: 0.55, y: 0.04), control: CGPoint(x: 0.71, y: 0.19))
-            far.addQuadCurve(to: CGPoint(x: 0.48, y: 0.55), control: CGPoint(x: 0.45, y: 0.30))
-            far.closeSubpath()
-            shape = shape.union(near).union(far)
-        case .folded:
-            let wing = CGMutablePath()
-            wing.move(to: CGPoint(x: 0.66, y: 0.47))
-            wing.addQuadCurve(to: CGPoint(x: 0.13, y: 0.70), control: CGPoint(x: 0.36, y: 0.38))
-            wing.addQuadCurve(to: CGPoint(x: 0.63, y: 0.60), control: CGPoint(x: 0.36, y: 0.71))
-            wing.closeSubpath()
-            // A tapered crescent under the folded wing keeps it readable inside the body silhouette.
-            let fold = CGMutablePath()
-            fold.move(to: CGPoint(x: 0.64, y: 0.585))
-            fold.addQuadCurve(to: CGPoint(x: 0.15, y: 0.705), control: CGPoint(x: 0.37, y: 0.68))
-            fold.addQuadCurve(to: CGPoint(x: 0.64, y: 0.585), control: CGPoint(x: 0.38, y: 0.76))
-            fold.closeSubpath()
-            shape = shape.union(wing).subtracting(fold)
-        }
-        let eye = CGPath(ellipseIn: CGRect(x: 0.71, y: 0.38, width: 0.06, height: 0.06), transform: nil)
-        return shape.subtracting(eye)
+        let grid = grid(pose), cell = 1 / CGFloat(max(grid.width, grid.height))
+        let origin = CGPoint(x: (1 - CGFloat(grid.width) * cell) / 2, y: (1 - CGFloat(grid.height) * cell) / 2)
+        let path = CGMutablePath()
+        for y in 0..<grid.height { for x in 0..<grid.width where grid[x, y] {
+            path.addRect(CGRect(x: origin.x + CGFloat(x) * cell, y: origin.y + CGFloat(y) * cell, width: cell, height: cell))
+        } }
+        return path.union(CGMutablePath(), using: .winding)
     }
 
-    private static func ellipse(center: CGPoint, width: CGFloat, height: CGFloat, degrees: CGFloat) -> CGPath {
-        var transform = CGAffineTransform(translationX: center.x, y: center.y).rotated(by: degrees * .pi / 180)
-        return CGPath(ellipseIn: CGRect(x: -width / 2, y: -height / 2, width: width, height: height), transform: &transform)
+    /// Device pixels per cell for a bird drawn in `side` points at `scale`: the largest whole number that
+    /// fits, or 0 when the grid must be halved (1x at menu sizes).
+    static func cellPixels(side: CGFloat, scale: CGFloat) -> Int {
+        Int((side * scale / 26).rounded(.down))
+    }
+
+    /// Draws the bird pixel-exact inside `rect` (user space, y down) for a context with `scale` pixels per point.
+    static func draw(_ pose: BirdPose, in context: CGContext, rect: CGRect, scale: CGFloat) {
+        let pixels = cellPixels(side: min(rect.width, rect.height), scale: scale)
+        let grid = pixels >= 1 ? grid(pose) : half(pose)
+        let cell = CGFloat(max(1, pixels)) / scale
+        let width = CGFloat(grid.width) * cell, height = CGFloat(grid.height) * cell
+        let snap = { (value: CGFloat) in (value * scale).rounded(.down) / scale }
+        grid.fill(in: context, origin: CGPoint(x: snap(rect.midX - width / 2), y: snap(rect.midY - height / 2)), cell: cell)
     }
 }
 
-/// Bitmaps of the bird for menus and tests. Brand purple for Available and Away, a quiet grey for offline.
+/// Bitmaps of the bird for menus and tests: brand purple for Available and Away, red for offline.
 enum BirdGlyph {
+    static let offlineRed = (red: 0.90, green: 0.22, blue: 0.21)
+
     static func color(_ state: BirdState) -> CGColor {
-        let tone = state.muted ? BrandTone.muted : BrandTone.purple
+        let tone = state.offline ? offlineRed : BrandTone.purple
         return CGColor(srgbRed: tone.red, green: tone.green, blue: tone.blue, alpha: 1)
     }
 
-    /// A non-template menu image, so the purple survives inside menus. Offline uses the dynamic secondary
-    /// label colour, resolved at draw time for light and dark menus.
+    @MainActor private static var images: [String: NSImage] = [:]
+
+    /// A non-template image, so the colour survives in menus. Drawn per destination scale with whole
+    /// device pixels per cell, so it stays sharp on 1x and 2x screens.
     @MainActor static func image(_ state: BirdState, side: CGFloat = 16) -> NSImage {
+        let key = "\(state.pose)-\(state.offline)-\(side)"
+        if let image = images[key] { return image }
         let image = NSImage(size: CGSize(width: side, height: side), flipped: true) { rect in
             guard let context = NSGraphicsContext.current?.cgContext else { return false }
-            context.addPath(BirdMark.path(state.pose, in: rect))
-            context.setFillColor(state.muted ? NSColor.secondaryLabelColor.cgColor : color(state))
-            context.fillPath()
+            context.setFillColor(color(state))
+            BirdMark.draw(state.pose, in: context, rect: rect, scale: abs(context.userSpaceToDeviceSpaceTransform.a))
             return true
         }
         image.isTemplate = false
         image.accessibilityDescription = state.label
+        images[key] = image
         return image
     }
 
-    /// Renders the bird into a transparent square bitmap of `pixels` per side with fixed colours.
+    /// Renders the bird into a transparent square bitmap of `pixels` per side (one pixel per point).
     static func render(_ state: BirdState, pixels: Int) -> CGImage? {
         guard pixels > 0, let space = CGColorSpace(name: CGColorSpace.sRGB),
               let context = CGContext(data: nil, width: pixels, height: pixels, bitsPerComponent: 8, bytesPerRow: 0,
@@ -130,9 +234,8 @@ enum BirdGlyph {
         let side = CGFloat(pixels)
         context.translateBy(x: 0, y: side)
         context.scaleBy(x: 1, y: -1)
-        context.addPath(BirdMark.path(state.pose, in: CGRect(x: 0, y: 0, width: side, height: side)))
         context.setFillColor(color(state))
-        context.fillPath()
+        BirdMark.draw(state.pose, in: context, rect: CGRect(x: 0, y: 0, width: side, height: side), scale: 1)
         return context.makeImage()
     }
 }
@@ -152,8 +255,8 @@ struct PresenceBird: View {
 
     var body: some View {
         let state = BirdState(presence: presence)
-        BirdShape(pose: state.pose)
-            .fill(state.muted ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.arpeggio))
+        Image(nsImage: BirdGlyph.image(state, side: size))
+            .interpolation(.none)
             .frame(width: size, height: size)
             .contentTransition(.opacity)
             .animation(reduceMotion ? nil : .smooth(duration: 0.25), value: state)
