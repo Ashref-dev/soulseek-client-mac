@@ -2,183 +2,143 @@ import SwiftUI
 import AppKit
 import ArpeggioServices
 
-/// The Arpeggio mark as a menu bar template. Dimmed when offline, with a moon when away and an arrow
-/// while someone is downloading from you.
-enum MenuBarGlyph {
-    static func image(presence: Presence, uploading: Bool) -> NSImage {
-        let image = NSImage(size: MenuGlyphGeometry.canvas, flipped: true) { _ in
-            guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
-            var transform = ArpeggioMark.transform(into: MenuGlyphGeometry.mark, fit: true)
-            ctx.addPath(ArpeggioMark.combined.copy(using: &transform)!)
-            ctx.setFillColor(NSColor.black.withAlphaComponent(presence == .offline ? 0.4 : 1).cgColor)
-            ctx.fillPath(using: .evenOdd)
-            let badge = MenuGlyphGeometry.badge
-            ctx.setFillColor(NSColor.black.cgColor)
-            if uploading, presence != .offline {
-                let arrow = CGMutablePath()
-                arrow.move(to: CGPoint(x: badge.midX, y: badge.minY))
-                arrow.addLine(to: CGPoint(x: badge.maxX, y: badge.midY))
-                arrow.addLine(to: CGPoint(x: badge.midX + 0.9, y: badge.midY))
-                arrow.addLine(to: CGPoint(x: badge.midX + 0.9, y: badge.maxY))
-                arrow.addLine(to: CGPoint(x: badge.midX - 0.9, y: badge.maxY))
-                arrow.addLine(to: CGPoint(x: badge.midX - 0.9, y: badge.midY))
-                arrow.addLine(to: CGPoint(x: badge.minX, y: badge.midY))
-                arrow.closeSubpath()
-                ctx.addPath(arrow); ctx.fillPath()
-            } else if presence == .away {
-                ctx.addEllipse(in: badge); ctx.fillPath()
-                ctx.setBlendMode(.clear)
-                ctx.addEllipse(in: badge.offsetBy(dx: 2.2, dy: -1.6)); ctx.fillPath()
-                ctx.setBlendMode(.normal)
-            }
-            return true
-        }
-        image.isTemplate = true
-        return image
-    }
-}
-
-/// The Arpeggio mark as a SwiftUI view, coloured by the foreground style.
-struct ArpeggioLogo: View {
-    var body: some View {
-        ArpeggioMarkShape()
-            .fill(style: FillStyle(eoFill: true))
-            .aspectRatio(1, contentMode: .fit)
-            .accessibilityHidden(true)
-    }
-}
-
-struct ArpeggioMarkShape: Shape {
-    func path(in rect: CGRect) -> Path {
-        var transform = ArpeggioMark.transform(into: rect, fit: true)
-        return Path(ArpeggioMark.combined.copy(using: &transform)!)
-    }
-}
-
 struct MenuBarLabel: View {
     let model: AppModel
     let bootstrap: Bootstrap
+    @State private var status = MenuBarStatus()
 
     var body: some View {
-        Image(nsImage: MenuBarGlyph.image(presence: model.presence, uploading: model.activeUploads > 0))
-            .accessibilityLabel("Arpeggio, \(model.statusText)\(model.activeUploads > 0 ? ", uploading" : "")")
+        let state = status.state
+        Image(nsImage: MenuBarGlyph.image(state))
+            .accessibilityLabel(state.accessibilityLabel)
             .task { await bootstrap.start(model) }
+            .task { await status.follow(model) }
     }
 }
 
+/// The panel behind the menu bar icon. MenuBarExtra keeps it alive while closed, so transfers, lifetime
+/// totals and indexing are followed only while it is open, and then at most twice a second.
 struct MenuBarPanel: View {
     let model: AppModel
+    @State private var feed = MenuBarPanelFeed()
+    @State private var isOpen = false
+
+    var body: some View {
+        MenuBarPanelContent(model: model, live: feed.live, isOpen: isOpen)
+            .background {
+                PanelVisibilityReader { open in
+                    guard open != isOpen else { return }
+                    if open { feed.refresh(model) }
+                    isOpen = open
+                }
+            }
+            .onAppear { feed.refresh(model) }
+            .task(id: isOpen) {
+                guard isOpen else { return }
+                await feed.follow(model)
+            }
+    }
+}
+
+struct MenuBarPanelContent: View {
+    let model: AppModel
+    let live: MenuBarPanelLive
+    var isOpen = true
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openSettings) private var openSettings
+    @Environment(MenuBarRoute.self) private var route: MenuBarRoute?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            header.padding(14)
-            Divider()
-            activity.padding(14)
-            if let item = model.playback.item { Divider(); nowPlaying(item).padding(.horizontal, 14).padding(.vertical, 10) }
-            Divider()
-            VStack(spacing: 2) {
-                PanelRow(title: model.downloadsSuspended ? "Resume Downloads" : "Pause Downloads", symbol: model.downloadsSuspended ? "play" : "pause") {
-                    Task { await model.setTransfersSuspended(upload: false, !model.downloadsSuspended) }
-                }
-                PanelRow(title: model.uploadsSuspended ? "Resume Uploads" : "Pause Uploads", symbol: model.uploadsSuspended ? "play" : "pause") {
-                    Task { await model.setTransfersSuspended(upload: true, !model.uploadsSuspended) }
-                }
-                PanelRow(title: "Open Arpeggio", symbol: "macwindow") { openMain() }
-                PanelRow(title: "Settings…", symbol: "gearshape") { NSApp.activate(); openSettings() }
-                PanelRow(title: "Quit Arpeggio", symbol: "power") { NSApp.terminate(nil) }
+            header
+            transfers.padding(.top, 14)
+            if let item = model.playback.item {
+                NowPlayingRow(playback: model.playback, item: item).padding(.top, 8)
             }
-            .padding(6)
+            ShareSummary(live: live, isOpen: isOpen) { open(.sharedFiles) }.padding(.top, 14)
+            actions.padding(.top, 16)
         }
-        .frame(width: 310)
+        .padding(16)
+        .frame(width: 320)
+        .tint(.arpeggio)
     }
 
     private var header: some View {
         HStack(spacing: 12) {
-            ProfileAvatar(model: model, size: 40)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(model.accountName).font(.headline).lineLimit(1)
-                HStack(spacing: 5) {
-                    PresenceBird(presence: model.presence, size: 15, decorative: true)
-                    Text(model.statusText).font(.caption.weight(.medium)).foregroundStyle(model.statusTint)
-                }
-            }
-            Spacer()
-            Menu {
-                PresenceMenuItems(model: model, navigator: nil)
-            } label: {
-                Label {
-                    Text(model.connection.isConnected ? "Status" : "Connect")
-                } icon: {
-                    Image(nsImage: BirdGlyph.image(BirdState(presence: model.presence)))
-                }
-                .labelStyle(.titleAndIcon)
-            }
-            .menuStyle(.button)
-            .controlSize(.small)
-            .fixedSize()
-            .disabled(model.settings.username.isEmpty)
-            .help(model.connection.isConnected ? "Choose Available or Away" : "Connect to Soulseek")
-            .accessibilityLabel(model.connection.isConnected ? "Status, \(model.statusText)" : "Connect")
-        }
-    }
-
-    private var activity: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 10) {
-                Tile(symbol: "arrow.down", title: "Downloading", value: Format.speed(model.downloadSpeed),
-                     detail: count(model.transfers.filter { !$0.upload && !$0.isPreview && $0.status.isActive }.count, "file"), active: model.downloadSpeed > 0)
-                Tile(symbol: "arrow.up", title: "Uploading", value: Format.speed(model.uploadSpeed),
-                     detail: count(model.activeUploads, "listener"), active: model.activeUploads > 0)
-            }
-            shareStatus
-            if model.statistics.uploadedBytes > 0 {
-                Label("\(Format.bytes(model.statistics.uploadedBytes)) shared with \(model.statistics.listeners.count.formatted()) people so far", systemImage: "heart.fill")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    @ViewBuilder private var shareStatus: some View {
-        let status = model.shareStatus
-        let label = Label {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(status.headline)
-                if let detail = status.detail { Text(detail).font(.caption2).fixedSize(horizontal: false, vertical: true) }
-                if !status.isSharing, !status.isIndexing { Text("Open Arpeggio, then choose Shared Files.").font(.caption2).foregroundStyle(Color.arpeggio) }
-            }
-        } icon: {
-            if status.isIndexing { ProgressView().controlSize(.mini) } else { Image(systemName: status.symbol) }
-        }
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        if status.isSharing || status.isIndexing {
-            label
-        } else {
-            Button(action: openMain) { label.contentShape(.rect) }
-                .buttonStyle(.plain)
-                .help("Open Arpeggio to manage Shared Files")
-        }
-    }
-
-    private func nowPlaying(_ item: Playback.Item) -> some View {
-        HStack(spacing: 10) {
-            Button { model.playback.togglePlay() } label: {
-                Image(systemName: model.playback.isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                    .font(.system(size: 24)).foregroundStyle(Color.arpeggio)
-            }
-            .buttonStyle(.plain)
+            ProfileAvatar(model: model, size: 38)
             VStack(alignment: .leading, spacing: 1) {
-                Text(model.playback.metadata.title ?? (item.fileName as NSString).deletingPathExtension).font(.callout.weight(.medium)).lineLimit(1)
-                Text(model.playback.metadata.artist ?? item.subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                Text(model.accountName)
+                    .font(.headline)
+                    .lineLimit(1)
+                Text(connectionLine)
+                    .font(.caption)
+                    .foregroundStyle(model.settings.isLocalServer ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+                    .lineLimit(1)
+                    .help("Server \(model.settings.serverEndpoint)")
             }
+            .layoutPriority(1)
+            Spacer(minLength: 8)
+            PresenceControl(model: model, connect: connect, signIn: { open(.signIn) })
         }
     }
 
-    private func count(_ value: Int, _ noun: String) -> String {
-        value == 0 ? "Idle" : "\(value) \(noun)\(value == 1 ? "" : "s")"
+    private var connectionLine: String {
+        guard model.connection.isConnected else { return model.statusText }
+        return model.settings.isSoulseekServer ? "Online" : "Online · \(model.settings.targetDescription)"
+    }
+
+    private var transfers: some View {
+        VStack(spacing: 0) {
+            TransferRow(upload: false, pulse: live.downloads, suspended: model.downloadsSuspended) {
+                Task { await model.setTransfersSuspended(upload: false, !model.downloadsSuspended) }
+            }
+            Divider().padding(.leading, 52)
+            TransferRow(upload: true, pulse: live.uploads, suspended: model.uploadsSuspended) {
+                Task { await model.setTransfersSuspended(upload: true, !model.uploadsSuspended) }
+            }
+        }
+        .background(.fill.quaternary, in: .rect(cornerRadius: 14))
+    }
+
+    private var actions: some View {
+        HStack(spacing: 8) {
+            Button(action: openMain) {
+                Label {
+                    Text("Open Arpeggio")
+                } icon: {
+                    ArpeggioLogo().frame(width: 15, height: 15)
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .buttonBorderShape(.capsule)
+            .keyboardShortcut(.defaultAction)
+            .help("Open the Arpeggio window")
+            Spacer(minLength: 0)
+            PanelIconButton(symbol: "magnifyingglass", title: "Search", shortcut: "⌘F") { open(.search) }
+                .keyboardShortcut("f")
+            PanelIconButton(symbol: "folder", title: "Open Downloads Folder") {
+                NSWorkspace.shared.open(URL(fileURLWithPath: model.settings.downloadDirectory))
+            }
+            .disabled(!live.downloadsFolderExists)
+            PanelIconButton(symbol: "gearshape", title: "Settings", shortcut: "⌘,") { NSApp.activate(); openSettings() }
+                .keyboardShortcut(",")
+            PanelIconButton(symbol: "power", title: "Quit Arpeggio", shortcut: "⌘Q") { NSApp.terminate(nil) }
+                .keyboardShortcut("q")
+        }
+        .controlSize(.large)
+    }
+
+    /// Connects with the saved password, or opens the sign-in sheet when there is none.
+    private func connect() {
+        Task {
+            let password = await model.savedPassword()
+            if password.isEmpty { open(.signIn) } else { await model.login(password: password) }
+        }
+    }
+
+    private func open(_ request: MenuBarRoute.Request) {
+        openMain()
+        route?.send(request)
     }
 
     private func openMain() {
@@ -188,41 +148,38 @@ struct MenuBarPanel: View {
     }
 }
 
-private struct Tile: View {
-    let symbol: String
-    let title: String
-    let value: String
-    let detail: String
-    let active: Bool
+/// Reports whether the panel's window is open, from window notifications: MenuBarExtra does not run view
+/// lifecycle callbacks on every open and close.
+private struct PanelVisibilityReader: NSViewRepresentable {
+    let report: @MainActor (Bool) -> Void
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Label(title, systemImage: symbol).font(.caption.weight(.medium)).foregroundStyle(active ? Color.arpeggio : .secondary)
-                .symbolEffect(.pulse, options: .repeating, isActive: active)
-            Text(value).font(.title3.weight(.semibold)).monospacedDigit().contentTransition(.numericText())
-            Text(detail).font(.caption2).foregroundStyle(.secondary)
+    func makeNSView(context: Context) -> Probe { Probe() }
+    func updateNSView(_ probe: Probe, context: Context) { probe.report = report }
+
+    final class Probe: NSView {
+        var report: (@MainActor (Bool) -> Void)?
+        private var observers: [NSObjectProtocol] = []
+
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            for observer in observers { NotificationCenter.default.removeObserver(observer) }
+            observers = []
+            if let window {
+                let names = [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification, NSWindow.didChangeOcclusionStateNotification]
+                observers = names.map { name in
+                    NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
+                        MainActor.assumeIsolated { self?.publish() }
+                    }
+                }
+            }
+            Task { [weak self] in self?.publish() }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(10)
-        .background(.quaternary.opacity(0.5), in: .rect(cornerRadius: 10))
-    }
-}
 
-private struct PanelRow: View {
-    let title: String
-    let symbol: String
-    let action: () -> Void
-    @State private var hovering = false
-
-    var body: some View {
-        Button(action: action) {
-            Label(title, systemImage: symbol)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 8).padding(.vertical, 5)
-                .background(hovering ? Color.accentColor.opacity(0.18) : .clear, in: .rect(cornerRadius: 6))
-                .contentShape(.rect)
+        private func publish() {
+            guard let window else { report?(false); return }
+            report?(window.isVisible && (window.isKeyWindow || window.occlusionState.contains(.visible)))
         }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
     }
 }

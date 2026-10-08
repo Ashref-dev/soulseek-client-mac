@@ -10,6 +10,7 @@ struct RootView: View {
     @State private var navigator = Navigator()
     @SceneStorage("Arpeggio.selectedSection") private var restoredSection = SidebarSection.search.rawValue
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(MenuBarRoute.self) private var menuBarRoute: MenuBarRoute?
 
     var body: some View {
         NavigationSplitView {
@@ -57,7 +58,9 @@ struct RootView: View {
         .onAppear {
             navigator.section = SidebarSection(rawValue: restoredSection) ?? .search
             NSApp.setActivationPolicy(.regular)
+            takeMenuBarRequest()
         }
+        .onChange(of: menuBarRoute?.revision) { takeMenuBarRequest() }
         .onDisappear {
             if model.settings.hideDockWhenClosed == true, model.settings.showsMenuBarIcon { NSApp.setActivationPolicy(.accessory) }
         }
@@ -65,6 +68,25 @@ struct RootView: View {
         .animation(reduceMotion ? nil : .smooth(duration: 0.2), value: model.error)
         .onChange(of: model.settings.onboardingVersion) { _, version in if version == nil { navigator.showOnboarding = true } }
         .onChange(of: model.unread.count) { _, count in NSApp.dockTile.badgeLabel = count > 0 ? String(count) : nil }
+    }
+
+    /// Search, Shared Files or Sign In chosen in the menu bar panel, which opens this window first.
+    private func takeMenuBarRequest() {
+        switch menuBarRoute?.take() {
+        case .search?:
+            navigator.go(.search)
+            // The toolbar search field exists only once Search is on screen in a key window.
+            Task {
+                try? await Task.sleep(for: .milliseconds(200))
+                navigator.focusSearch()
+            }
+        case .sharedFiles?:
+            navigator.go(.shared)
+        case .signIn?:
+            if model.settings.onboardingVersion == nil { navigator.showOnboarding = true } else { navigator.showLogin = true }
+        case nil:
+            break
+        }
     }
 
     @ViewBuilder private var detail: some View {

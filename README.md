@@ -10,10 +10,10 @@ Soulseek is a long-running peer-to-peer network where people share their music l
 
 - **Search** the whole network. Results stream in live and are grouped by person, album and track, with quick filters for lossless, hi-res and bitrate.
 - **Preview first.** Preview native audio, video, images and PDFs from Search, Browse or Transfers, including with Space. Supported audio can stream while bytes arrive; other files fetch into a temporary cache before opening in macOS playback or Quick Look. Codec support depends on macOS. Previews are limited to 512 MB and a five-minute fetch deadline. Keep them with Download, or close to discard.
-- **Download** single files or whole albums. Each album lands in its own folder. There are no per-user, "incomplete" or "complete" folders unless you ask for them.
+- **Download** single files or whole albums. Each album lands in its own folder. Unfinished files wait in a visible `Incomplete` folder and move into place when done. There are no per-user folders unless you ask for them.
 - **Share** folders with a drag and drop. See what you share, how big it is, and who is downloading from you right now.
 - **Sharing policy and indexing.** Settings > Sharing and the welcome guide let you require sharing before someone downloads from you, with a configurable automatic message. Only fresh confirmed zero-share counts are declined; unknown counts are allowed. Messages are throttled per account and user. Indexing reports its current folder and actual files processed, without estimating an unknown total. The welcome guide offers both your Music folder and a prominent custom-folder picker.
-- **Stay in the menu bar.** Close the window and Arpeggio keeps sharing. The menu bar icon shows whether you are offline, available, away or uploading.
+- **Stay in the menu bar.** Close the window and Arpeggio keeps sharing. The menu bar icon shows whether you are offline, available or away, and whether anything is downloading, uploading or both, without animating. Its panel shows live speeds, pauses or resumes each direction, and opens Search, Settings or the download folder.
 - **Statistics** count everything you have downloaded and uploaded since you started, in the sidebar and in Settings > Statistics. Totals are in decimal gigabytes (1 GB = 1,000,000,000 bytes) with completed file counts. Copy a text summary, or copy, save or share a 1200 x 676 picture. Your username and profile picture appear only if you turn them on.
 - **Basic Soulseek workflows:** wishlist searches, received searches, browsing someone's library, private messages, chat rooms, a user list with trusted and ignored people, Available and Away status, your own picture and description, upload slots, speed limits and per-user queue limits. This is not a promise of exhaustive parity with mature clients.
 - **Pause entire directions.** Pause or resume Uploads and Downloads independently from the menu bar or Network menu. Active sockets stop, queues remain, and downloads resume from partial bytes. Presence stays unchanged. These controls are session-only.
@@ -61,7 +61,7 @@ Release builds also produce `dist/Soulseek-Arpeggio-x.y.z.zip`. For example, pre
 | What | Where |
 |---|---|
 | Downloads | `~/Downloads/Arpeggio/<album>/<file>` by default. Settings > Transfers can add per-user folders or keep the sharer's full path. |
-| Unfinished downloads | A hidden `.arpeggio-incomplete` folder inside the download folder. Files move into place only when every byte has arrived. |
+| Unfinished downloads | A visible `Incomplete` folder inside the download folder, with readable names such as `Song [1a2b3c4d5e6f7a8b].flac.partial`. Files move into place only when every byte has arrived, and the folder disappears once nothing is unfinished. Partial files from the older hidden `.arpeggio-incomplete` folder move there automatically. `.partial` files are never shared. |
 | Previews | `~/Library/Caches/tn.ashref.arpeggio/Previews`. Cleared when you stop listening, at launch and at quit. |
 | App data | `~/Library/Application Support/Arpeggio/arpeggio.sqlite` |
 | Password | macOS Keychain, only if you choose to remember it |

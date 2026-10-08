@@ -78,5 +78,7 @@ public enum ToastGeometry {
 public enum MenuGlyphGeometry {
     public static let canvas = CGSize(width: 20, height: 18)
     public static let mark = CGRect(x: 2.5, y: 1.5, width: 15, height: 15)
-    public static let badge = CGRect(x: 14, y: 11, width: 5.5, height: 5.5)
+    public static let badge = CGRect(x: 14.6, y: 12.4, width: 4.9, height: 4.9)
+    /// Clear space cut into the mark around the badge, so the two never touch.
+    public static let badgeHalo: CGFloat = 0.8
 }

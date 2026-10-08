@@ -5,7 +5,7 @@ import SoulseekCore
 
 extension AppModel {
     var accountName: String {
-        connection.isConnected ? activeAccount : (settings.username.isEmpty ? "No Account" : settings.username)
+        connection.isConnected && !activeAccount.isEmpty ? activeAccount : (settings.username.isEmpty ? "No Account" : settings.username)
     }
 
     var statusText: String {

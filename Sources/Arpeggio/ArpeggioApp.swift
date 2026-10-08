@@ -8,6 +8,7 @@ struct ArpeggioApp: App {
     @State private var model: AppModel?
     @State private var startupError: String?
     @State private var bootstrap = Bootstrap()
+    @State private var menuBarRoute = MenuBarRoute()
 
     init() {
         do {
@@ -24,6 +25,7 @@ struct ArpeggioApp: App {
         Window("Arpeggio", id: "main") {
             if let model {
                 RootView(model: model, bootstrap: bootstrap)
+                    .environment(menuBarRoute)
                     .task { delegate.model = model }
             } else {
                 StartupFailureView(message: startupError ?? "Storage is unavailable.")
@@ -41,10 +43,15 @@ struct ArpeggioApp: App {
         })) {
             if let model {
                 MenuBarPanel(model: model)
+                    .environment(menuBarRoute)
                     .task { delegate.model = model }
             }
         } label: {
-            if let model { MenuBarLabel(model: model, bootstrap: bootstrap) } else { Image(nsImage: MenuBarGlyph.image(presence: .offline, uploading: false)) }
+            if let model {
+                MenuBarLabel(model: model, bootstrap: bootstrap)
+            } else {
+                Image(nsImage: MenuBarGlyph.image(.offline)).accessibilityLabel(MenuBarState.offline.accessibilityLabel)
+            }
         }
         .menuBarExtraStyle(.window)
 

@@ -248,6 +248,7 @@ struct TransfersView: View {
                 }
             }
         }
+        .alternatingRowBackgrounds(.disabled)
         .contextMenu(forSelectionType: TransferNodeID.self) { ids in
             menu(tree.transfers(for: ids))
         } primaryAction: { ids in
