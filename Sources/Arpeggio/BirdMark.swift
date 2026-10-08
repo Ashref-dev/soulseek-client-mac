@@ -79,6 +79,29 @@ struct PixelGrid: Sendable, Equatable {
         return PixelGrid(width: w, height: h, cells: out)
     }
 
+    /// The smallest box of cells holding ink: (minX, minY, width, height) in cells.
+    var inkBounds: (x: Int, y: Int, width: Int, height: Int) {
+        var minX = width, minY = height, maxX = -1, maxY = -1
+        for y in 0..<height { for x in 0..<width where self[x, y] {
+            minX = min(minX, x); maxX = max(maxX, x); minY = min(minY, y); maxY = max(maxY, y)
+        } }
+        return maxX < 0 ? (0, 0, 0, 0) : (minX, minY, maxX - minX + 1, maxY - minY + 1)
+    }
+
+    /// Fills cells of `cell` points from `origin` (points) into a context whose user space is device pixels,
+    /// rounding every cell edge to a whole pixel so the art stays sharp at any size, without blur.
+    func fillSnapped(in context: CGContext, origin: CGPoint, cell: CGFloat, scale: CGFloat) {
+        context.saveGState()
+        context.setShouldAntialias(false)
+        let edge = { (start: CGFloat, index: Int) in ((start + CGFloat(index) * cell) * scale).rounded() }
+        for y in 0..<height { for x in 0..<width where self[x, y] {
+            let left = edge(origin.x, x), right = edge(origin.x, x + 1), top = edge(origin.y, y), bottom = edge(origin.y, y + 1)
+            if right > left, bottom > top { context.addRect(CGRect(x: left, y: top, width: right - left, height: bottom - top)) }
+        } }
+        context.fillPath()
+        context.restoreGState()
+    }
+
     /// Fills each cell as a `cell`-sized square from `origin`, in the context's current user space.
     /// Callers pass device-pixel multiples so edges land on whole pixels; antialiasing is off.
     func fill(in context: CGContext, origin: CGPoint, cell: CGFloat) {

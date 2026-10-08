@@ -18,13 +18,16 @@ enum MenuBarGlyph {
     @MainActor static func image(_ state: MenuBarState, style: MenuBarIconStyle = .arpeggio) -> NSImage {
         let key = Key(style: style, state: state)
         if let image = images[key] { return image }
-        let image = NSImage(size: MenuGlyphGeometry.canvas, flipped: true) { _ in
-            guard let context = NSGraphicsContext.current?.cgContext else { return false }
-            switch style {
-            case .arpeggio: draw(state, in: context)
-            case .classicBird: ClassicBirdGlyph.draw(state, in: context, scale: abs(context.userSpaceToDeviceSpaceTransform.a))
+        let image: NSImage
+        switch style {
+        case .arpeggio:
+            image = NSImage(size: MenuGlyphGeometry.canvas, flipped: true) { _ in
+                guard let context = NSGraphicsContext.current?.cgContext else { return false }
+                draw(state, in: context)
+                return true
             }
-            return true
+        case .classicBird:
+            image = ClassicBirdGlyph.image(state)
         }
         image.isTemplate = style == .arpeggio
         image.accessibilityDescription = state.accessibilityLabel
@@ -74,11 +77,13 @@ enum MenuBarGlyph {
 
 /// The classic Soulseek bird in the menu bar, in colour: purple with wings open while available or moving
 /// bytes, folded while away, red and folded while offline. Transfers add a small pixel arrow at the bottom
-/// right: down, up, or both. One static glyph per state, on the same canvas as the Arpeggio style.
+/// right: down, up, or both. One static glyph per state, centred on its ink in its own canvas.
 enum ClassicBirdGlyph {
-    /// The bird's 13 by 12 point box. Whole points, so it lands on whole pixels at 1x and 2x.
-    static let bird = CGRect(x: 3, y: 3, width: 13, height: 12)
-    /// 1x arrows use one point per cell; 2x arrows use one device pixel per cell, matching the bird's grain.
+    static let canvas = CGSize(width: 22, height: 18)
+    /// Points per grid cell: the 24-row bird stands 16 points tall, close to the system menu bar symbols.
+    static let cell: CGFloat = 2.0 / 3.0
+
+    /// 1x arrows use one point per cell; 2x and 3x arrows use finer cells, matching the bird's grain.
     static let downArrow = PixelGrid(rows: ["..#..", "..#..", "#####", ".###.", "..#.."])
     static let upArrow = PixelGrid(rows: ["..#..", ".###.", "#####", "..#..", "..#.."])
     static let bothArrow = PixelGrid(rows: ["..#..", ".###.", "#####", "..#..", "#####", ".###.", "..#.."])
@@ -91,16 +96,16 @@ enum ClassicBirdGlyph {
     static func arrow(_ state: MenuBarState, scale: CGFloat) -> (grid: PixelGrid, cell: CGFloat)? {
         let fine = scale >= 2
         switch (state.isDownloading, state.isUploading) {
-        case (true, true): return fine ? (fineBothArrow, 1 / scale) : (bothArrow, 1)
-        case (true, false): return fine ? (fineDownArrow, 1 / scale) : (downArrow, 1)
-        case (false, true): return fine ? (fineUpArrow, 1 / scale) : (upArrow, 1)
+        case (true, true): return fine ? (fineBothArrow, 0.5) : (bothArrow, 1)
+        case (true, false): return fine ? (fineDownArrow, 0.5) : (downArrow, 1)
+        case (false, true): return fine ? (fineUpArrow, 0.5) : (upArrow, 1)
         case (false, false): return nil
         }
     }
 
-    /// The arrow's top-left corner in points: right edge at 19 pt, bottom one point above the canvas edge.
+    /// The arrow's top-left corner in points: right edge at 21 pt, bottom one point above the canvas edge.
     static func arrowOrigin(_ grid: PixelGrid, cell: CGFloat) -> CGPoint {
-        CGPoint(x: 19 - CGFloat(grid.width) * cell, y: 17 - CGFloat(grid.height) * cell)
+        CGPoint(x: 21 - CGFloat(grid.width) * cell, y: 17 - CGFloat(grid.height) * cell)
     }
 
     static func birdState(_ state: MenuBarState) -> BirdState {
@@ -111,22 +116,45 @@ enum ClassicBirdGlyph {
         }
     }
 
+    /// Draws into a bitmap context whose user space is device pixels with y pointing down.
     static func draw(_ state: MenuBarState, in context: CGContext, scale: CGFloat) {
         let bird = birdState(state)
+        let halve = cell * scale < 1
+        let grid = halve ? BirdMark.half(bird.pose) : BirdMark.grid(bird.pose)
+        let size = halve ? cell * 2 : cell
+        let ink = grid.inkBounds
+        let center = CGPoint(x: canvas.width / 2, y: canvas.height / 2)
+        let snap = { (value: CGFloat) in (value * scale).rounded() / scale }
+        let origin = CGPoint(x: snap(center.x - (CGFloat(ink.x) + CGFloat(ink.width) / 2) * size),
+                             y: snap(center.y - (CGFloat(ink.y) + CGFloat(ink.height) / 2) * size))
         context.setFillColor(BirdGlyph.color(bird))
-        BirdMark.draw(bird.pose, in: context, rect: Self.bird, scale: max(1, scale))
-        if let arrow = arrow(state, scale: scale) { arrow.grid.fill(in: context, origin: arrowOrigin(arrow.grid, cell: arrow.cell), cell: arrow.cell) }
+        grid.fillSnapped(in: context, origin: origin, cell: size, scale: scale)
+        if let arrow = arrow(state, scale: scale) {
+            arrow.grid.fillSnapped(in: context, origin: arrowOrigin(arrow.grid, cell: arrow.cell), cell: arrow.cell, scale: scale)
+        }
     }
 
     static func render(_ state: MenuBarState, scale: CGFloat) -> CGImage? {
-        let width = Int((MenuGlyphGeometry.canvas.width * scale).rounded()), height = Int((MenuGlyphGeometry.canvas.height * scale).rounded())
+        let width = Int((canvas.width * scale).rounded()), height = Int((canvas.height * scale).rounded())
         guard scale > 0, let space = CGColorSpace(name: CGColorSpace.sRGB),
               let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
                                       space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
         context.translateBy(x: 0, y: CGFloat(height))
-        context.scaleBy(x: scale, y: -scale)
+        context.scaleBy(x: 1, y: -1)
         draw(state, in: context, scale: scale)
         return context.makeImage()
+    }
+
+    /// Explicit 1x, 2x and 3x bitmaps, so AppKit picks an exact one for each screen and never resamples.
+    static func image(_ state: MenuBarState) -> NSImage {
+        let image = NSImage(size: canvas)
+        for scale in [1, 2, 3] {
+            guard let bitmap = render(state, scale: CGFloat(scale)) else { continue }
+            let rep = NSBitmapImageRep(cgImage: bitmap)
+            rep.size = canvas
+            image.addRepresentation(rep)
+        }
+        return image
     }
 }
 

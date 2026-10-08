@@ -95,7 +95,7 @@ private final class Counter: Sendable {
             let image = MenuBarGlyph.image(state, style: style)
             #expect(image === MenuBarGlyph.image(state, style: style))
             #expect(image.isTemplate == (style == .arpeggio))
-            #expect(image.size == MenuGlyphGeometry.canvas)
+            #expect(image.size == (style == .arpeggio ? MenuGlyphGeometry.canvas : ClassicBirdGlyph.canvas))
             #expect(image.accessibilityDescription == state.accessibilityLabel)
             images.append(ObjectIdentifier(image))
         }
@@ -122,6 +122,25 @@ private final class Counter: Sendable {
     #expect(ClassicBirdGlyph.birdState(.offline).offline)
     #expect(ClassicBirdGlyph.birdState(.away).pose == .folded)
     #expect(ClassicBirdGlyph.birdState(.downloading).pose == .extended)
+}
+
+/// The classic bird must read like a system menu bar symbol: about 16 points tall and centred on its ink.
+@Test func classicBirdIsFullSizeAndCentred() throws {
+    for scale in [1, 2, 3] {
+        for state in [MenuBarState.available, .away, .offline] {
+            let image = try #require(ClassicBirdGlyph.render(state, scale: CGFloat(scale)))
+            let mask = alpha(image)
+            var minX = image.width, maxX = -1, minY = image.height, maxY = -1
+            for y in 0..<image.height { for x in 0..<image.width where mask[y * image.width + x] > 0 {
+                minX = min(minX, x); maxX = max(maxX, x); minY = min(minY, y); maxY = max(maxY, y)
+            } }
+            let height = CGFloat(maxY - minY + 1) / CGFloat(scale)
+            #expect(height >= 15 && height <= 16.5, "\(state) at \(scale)x stands \(height) pt")
+            let midX = CGFloat(minX + maxX + 1) / 2 / CGFloat(scale), midY = CGFloat(minY + maxY + 1) / 2 / CGFloat(scale)
+            #expect(abs(midX - ClassicBirdGlyph.canvas.width / 2) <= 0.75, "\(state) at \(scale)x centred horizontally")
+            #expect(abs(midY - ClassicBirdGlyph.canvas.height / 2) <= 0.75, "\(state) at \(scale)x centred vertically")
+        }
+    }
 }
 
 @Test func menuBarStyleDecodesLenientlyAndDefaultsToTheClassicBird() throws {
@@ -237,7 +256,7 @@ private final class Counter: Sendable {
     let folder = URL(fileURLWithPath: directory, isDirectory: true)
     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
     for scale in [1, 2] {
-        let cellW = 28 * scale, cellH = 22 * scale, states = MenuBarState.allCases
+        let cellW = 30 * scale, cellH = 22 * scale, states = MenuBarState.allCases
         let width = cellW * states.count, height = cellH * 4
         let space = try #require(CGColorSpace(name: CGColorSpace.sRGB))
         let context = try #require(CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0, space: space,
