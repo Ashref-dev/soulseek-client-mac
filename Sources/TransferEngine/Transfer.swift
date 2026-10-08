@@ -5,7 +5,7 @@ public enum TransferStatus: String, Codable, Sendable {
     case queued, negotiating, transferring, paused, completed, failed, cancelled
 }
 
-public struct Transfer: Codable, Sendable, Identifiable {
+public struct Transfer: Codable, Sendable, Identifiable, Equatable {
     public var id = UUID().uuidString
     public var user: String
     public var file: SharedFile

@@ -18,14 +18,15 @@ public struct Notice: Identifiable, Equatable, Sendable {
 extension AppModel {
     public static func downloadKey(user: String, path: String) -> String { SearchIdentity.key(user: user, path: path) }
 
-    public func downloadState(user: String, path: String) -> Transfer? { downloadIndex[Self.downloadKey(user: user, path: path)] }
+    public func downloadState(user: String, path: String) -> Transfer? { downloadStates[Self.downloadKey(user: user, path: path)] }
 
     func indexDownloads(_ transfers: [Transfer]) {
         var index: [String: Transfer] = [:]
         for transfer in transfers where !transfer.upload && !transfer.isPreview && transfer.status != .cancelled {
             index[Self.downloadKey(user: transfer.user, path: transfer.file.path)] = transfer
         }
-        downloadIndex = index
+        downloadStates.replace(with: index)
+        if downloadIndex != index { downloadIndex = index }
     }
 
     public func announceDownload(_ items: [SearchResult], wholeFolder: String? = nil) {
