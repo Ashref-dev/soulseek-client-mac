@@ -37,6 +37,7 @@ public actor ShareIndex {
     /// Word index answering the network's constant stream of searches without scanning every file.
     private var entries: [IndexedFile] = []
     private var postings: [String: [Int]] = [:]
+    private var vocabulary: [(word: [UInt8], files: [Int])] = []
     private var scanRevision: UInt64 = 0
     public private(set) var queryRootResolutions = 0
     public private(set) var metadataReads = 0
@@ -159,8 +160,9 @@ public actor ShareIndex {
                 for word in Self.words(term.dropFirst()) { excluded.formUnion(postings[word] ?? []) }
             } else if term.hasPrefix("*") {
                 for part in Self.words(term.drop(while: { $0 == "*" })) {
+                    let needle = Array(part.precomposedStringWithCanonicalMapping.utf8)
                     var matches = Set<Int>()
-                    for (word, list) in postings where word.contains(part) { matches.formUnion(list) }
+                    for entry in vocabulary where Self.contains(entry.word, needle) { matches.formUnion(entry.files) }
                     required.append(matches.sorted())
                 }
             } else {
@@ -183,6 +185,16 @@ public actor ShareIndex {
     static func words<S: StringProtocol>(_ text: S) -> [String] {
         text.lowercased().split { !($0.isLetter || $0.isNumber) }.map(String.init)
     }
+    private static func contains(_ haystack: [UInt8], _ needle: [UInt8]) -> Bool {
+        guard !needle.isEmpty, haystack.count >= needle.count else { return needle.isEmpty }
+        let first = needle[0]
+        for start in 0...(haystack.count - needle.count) where haystack[start] == first {
+            var offset = 1
+            while offset < needle.count && haystack[start + offset] == needle[offset] { offset += 1 }
+            if offset == needle.count { return true }
+        }
+        return false
+    }
     private static func intersect(_ a: [Int], _ b: [Int]) -> [Int] {
         var output: [Int] = [], i = 0, j = 0
         while i < a.count && j < b.count {
@@ -197,6 +209,7 @@ public actor ShareIndex {
             for word in Set(Self.words(item.file.path)) { next[word, default: []].append(index) }
         }
         postings = next
+        vocabulary = next.map { (Array($0.key.precomposedStringWithCanonicalMapping.utf8), $0.value) }
     }
     public func resolve(_ path: String, allowPrivate: Bool = false, configuredFolders: [(URL, Bool)]? = nil) -> IndexedFile? {
         guard let item = files[path], allowed(item, privateAccess: allowPrivate, roots: normalizedRoots(configuredFolders)) else { return nil }

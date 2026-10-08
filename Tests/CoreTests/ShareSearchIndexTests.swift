@@ -24,6 +24,7 @@ import ShareIndexer
         #expect(await names("BEAT") == ["01 Indian Summer.flac"])
         #expect(await names("beatles -remix") == ["01 Come Together.flac"])
         #expect(await names("*eatles help") == ["02 Help (Remix).mp3"])
+        #expect(await names("*jo\u{308}rk") == ["01 Army of Me.flac"])
         #expect(await names("ac/dc black") == ["Back in Black.flac"])
         #expect(await names("bjo\u{308}rk") == ["01 Army of Me.flac"])
         #expect(await names("flac -beatles -beat -björk") == ["Back in Black.flac"])
@@ -51,8 +52,11 @@ import ShareIndexer
         let start = ContinuousClock.now
         var hits = 0
         for query in queries { hits += await index.search(query, configuredFolders: folders).count }
+        var wildcardHits = 0
+        for number in 0..<200 { wildcardHits += await index.search("*rtist\(number % 10)", configuredFolders: folders).count }
         let elapsed = ContinuousClock.now - start
         #expect(hits == 200 * 50)
+        #expect(wildcardHits == 20 * 50 + 9 * 20 * 500)
         print("Share search benchmark: 5000 files, 2000 queries, \(hits) results, \(elapsed)")
         #expect(elapsed < .seconds(2))
     }
