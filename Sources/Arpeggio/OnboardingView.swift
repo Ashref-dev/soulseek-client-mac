@@ -277,7 +277,7 @@ struct OnboardingView: View {
     private var downloads: some View {
         VStack(spacing: 18) {
             hero(symbol: "arrow.down.circle", title: "Where downloads go",
-                 text: "Each album lands in its own folder inside your download folder. No user folders, no “incomplete” or “complete” folders to dig through. Unfinished files stay hidden until they’re done.")
+                 text: "Each album lands in its own folder inside your download folder. No user folders to dig through. Unfinished files wait in an Incomplete folder and move into place when they’re done.")
             HStack(spacing: 10) {
                 Image(systemName: "folder.fill").foregroundStyle(Color.arpeggio)
                 Text((model.settings.downloadDirectory as NSString).abbreviatingWithTildeInPath).lineLimit(1).truncationMode(.middle)

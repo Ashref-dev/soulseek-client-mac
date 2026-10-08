@@ -43,6 +43,68 @@ import ShareIndexer
     #expect(try Data(contentsOf: destination) == Data("completed".utf8))
 }
 
+@Test func unfinishedFilesWaitInVisibleIncompleteFolder() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).resolvingSymlinksInPath()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let (first, firstPartial) = try SafeDestination.plan(root: root, user: "listener", remotePath: "Music\\Album\\01 Song.flac")
+    let (_, otherPeer) = try SafeDestination.plan(root: root, user: "someone", remotePath: "Music\\Album\\01 Song.flac")
+    let (second, secondPartial) = try SafeDestination.plan(root: root, user: "listener", remotePath: "Music\\Album\\.hidden.flac")
+    let incomplete = root.appendingPathComponent("Incomplete")
+    #expect(firstPartial.deletingLastPathComponent() == incomplete)
+    #expect(firstPartial.lastPathComponent.wholeMatch(of: /01 Song \[[0-9a-f]{16}\]\.flac\.partial/) != nil)
+    #expect(otherPeer != firstPartial)
+    let collidingAtEightHex = try ["Album6002\\Song.flac", "Album34331\\Song.flac"].map { try SafeDestination.plan(root: root, user: "peer", remotePath: $0).partial }
+    #expect(collidingAtEightHex[0] != collidingAtEightHex[1])
+    #expect(!secondPartial.lastPathComponent.hasPrefix("."))
+    let long = String(repeating: "é", count: 117) + ".flac"
+    let longPartial = try SafeDestination.plan(root: root, user: "listener", remotePath: "Album\\" + long).partial
+    #expect(longPartial.lastPathComponent.utf8.count <= 255)
+    try Data().write(to: longPartial); try FileManager.default.removeItem(at: longPartial)
+
+    try Data("one".utf8).write(to: firstPartial); try Data("two".utf8).write(to: secondPartial)
+    _ = try SafeDestination.publish(firstPartial, to: first)
+    #expect(FileManager.default.fileExists(atPath: secondPartial.path))
+    try Data().write(to: incomplete.appendingPathComponent(".DS_Store"))
+    _ = try SafeDestination.publish(secondPartial, to: second)
+    #expect(!FileManager.default.fileExists(atPath: incomplete.path))
+    #expect(try Data(contentsOf: first) == Data("one".utf8))
+}
+
+@Test func restoreMovesLegacyHiddenPartialsIntoIncompleteFolder() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).resolvingSymlinksInPath()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let legacy = root.appendingPathComponent(".arpeggio-incomplete")
+    try FileManager.default.createDirectory(at: legacy, withIntermediateDirectories: true)
+    let old = legacy.appendingPathComponent("0123abcd.partial")
+    try Data(repeating: 7, count: 40).write(to: old)
+    let database = try Database(url: root.appendingPathComponent("state.sqlite"))
+    var item = Transfer(user: "listener", file: SharedFile(path: "Music\\Album\\Track.flac", size: 100))
+    item.status = .paused; item.partial = old.path; item.destination = root.appendingPathComponent("Album/Track.flac").path
+    try await database.put(item, collection: "transfers", id: item.id)
+    let engine = TransferEngine(session: SoulseekSession(), database: database, root: root)
+    try await engine.restore()
+    let moved = URL(fileURLWithPath: try #require(await engine.snapshot().first?.partial))
+    #expect(moved.deletingLastPathComponent() == root.appendingPathComponent("Incomplete"))
+    #expect(try Data(contentsOf: moved) == Data(repeating: 7, count: 40))
+    #expect(!FileManager.default.fileExists(atPath: legacy.path))
+    await engine.shutdown()
+    #expect(try await database.get(Transfer.self, collection: "transfers", id: item.id)?.partial == moved.path)
+    await database.close()
+}
+
+@Test func partialFilesAreNeverShared() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let incomplete = root.appendingPathComponent("Downloads/Incomplete")
+    try FileManager.default.createDirectory(at: incomplete, withIntermediateDirectories: true)
+    try Data("partial".utf8).write(to: incomplete.appendingPathComponent("Song [0123abcd].flac.partial"))
+    try Data("done".utf8).write(to: root.appendingPathComponent("Downloads/Done.flac"))
+    let index = ShareIndex()
+    _ = await index.scan(folders: [(root.appendingPathComponent("Downloads"), false)])
+    #expect(await index.resolve("Downloads\\Done.flac") != nil)
+    #expect(await index.resolve("Downloads\\Incomplete\\Song [0123abcd].flac.partial") == nil)
+}
+
 @Test func destinationSymlinkCannotEscapeRoot() throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).resolvingSymlinksInPath()
     defer { try? FileManager.default.removeItem(at: root) }

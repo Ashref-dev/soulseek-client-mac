@@ -16,6 +16,7 @@ extension TransferEngine {
         let destination = URL(fileURLWithPath: destinationPath)
         guard partial.resolvingSymlinksInPath().path == partial.path else { throw FileSafetyError.symbolicLink }
         if !FileManager.default.fileExists(atPath: partial.path) {
+            try SafeDestination.ensureDirectory(partial.deletingLastPathComponent())
             guard FileManager.default.createFile(atPath: partial.path, contents: nil) else { throw ProtocolError.invalid("Could not create the partial download file.") }
         }
         let handle = try FileHandle(forWritingTo: partial)

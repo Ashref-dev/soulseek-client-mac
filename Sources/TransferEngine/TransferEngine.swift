@@ -75,6 +75,12 @@ public actor TransferEngine {
         }
         for item in transfers where item.isPreview { removePreviewFiles(item); try? await database.remove(collection: "transfers", id: item.id) }
         transfers.removeAll(where: \.isPreview)
+        for index in transfers.indices where !transfers[index].upload && transfers[index].status != .completed {
+            guard let path = transfers[index].partial,
+                  let moved = SafeDestination.migrateLegacyPartial(URL(fileURLWithPath: path), user: transfers[index].user, remotePath: transfers[index].file.path) else { continue }
+            transfers[index].partial = moved.path
+            scheduleCheckpoint(transfers[index].id)
+        }
         for index in transfers.indices where [.transferring, .negotiating, .queued].contains(transfers[index].status) {
             transfers[index].status = transfers[index].upload ? .failed : .queued
             transfers[index].speed = 0; transfers[index].token = nil
