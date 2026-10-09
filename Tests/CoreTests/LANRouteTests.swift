@@ -36,4 +36,17 @@ import Testing
         #expect(!Set(found).isDisjoint(with: own))
         #expect(Set(await LANRoute.scan(port: port, excluding: own)).isDisjoint(with: own))
     }
+
+    /// Silent addresses must not serialise: 200 unanswered hosts finish in a few timeouts, not 200.
+    @Test func probeIsASlidingWindowAndOnlyScansPrivateRanges() {
+        #expect(LANRoute.concurrency <= 64)
+        let started = ContinuousClock.now
+        let found = LANRoute.probe((1...200).map { "198.51.100.\($0)" }, port: 9, timeoutMilliseconds: 100)
+        #expect(found.isEmpty)
+        #expect(ContinuousClock.now - started < .seconds(2))
+        #expect(LANRoute.isPrivate(0xC0A8_01A7) && LANRoute.isPrivate(0x0A01_0203) && LANRoute.isPrivate(0xAC1F_0001))
+        #expect(!LANRoute.isPrivate(0xA9FE_8959) && !LANRoute.isPrivate(0x6476_A917) && !LANRoute.isPrivate(0xAC20_0001))
+    }
+
+
 }

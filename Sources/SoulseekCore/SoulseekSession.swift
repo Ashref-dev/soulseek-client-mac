@@ -35,6 +35,7 @@ public actor SoulseekSession {
     var publicAddress: String?
     var lanHosts: [String: (host: String, port: UInt16)] = [:]
     var lanMisses: [String: (port: UInt16, date: Date)] = [:]
+    var lanScans: [UInt16: Task<[String], Never>] = [:]
     var token: UInt32 = UInt32.random(in: 1000...UInt32.max / 2)
     let logger = Logger(subsystem: "tn.ashref.arpeggio", category: "Protocol")
     public init() {

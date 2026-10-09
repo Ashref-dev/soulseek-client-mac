@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import ArpeggioServices
 import Persistence
+import SoulseekCore
 
 @main
 struct ArpeggioApp: App {
@@ -12,6 +13,7 @@ struct ArpeggioApp: App {
     @State private var menuBarRoute = MenuBarRoute()
 
     init() {
+        SoulseekSession.raiseDescriptorLimit()
         do {
             let directory = ProcessInfo.processInfo.environment["ARPEGGIO_DATA_DIRECTORY"].map { URL(fileURLWithPath: $0, isDirectory: true) }
             let model = try AppModel(dataDirectory: directory)

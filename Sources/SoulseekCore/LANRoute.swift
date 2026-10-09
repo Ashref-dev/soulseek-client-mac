@@ -18,7 +18,12 @@ enum LANRoute {
         }
     }
 
-    /// Our IPv4 addresses on active Wi-Fi and Ethernet interfaces with their netmasks.
+    /// Home and office ranges (10/8, 172.16/12, 192.168/16). Link-local and carrier ranges are not scanned.
+    static func isPrivate(_ ip: UInt32) -> Bool {
+        ip & 0xFF00_0000 == 0x0A00_0000 || ip & 0xFFF0_0000 == 0xAC10_0000 || ip & 0xFFFF_0000 == 0xC0A8_0000
+    }
+
+    /// Our private IPv4 addresses on active Wi-Fi and Ethernet interfaces with their netmasks.
     static func localNetworks() -> [(address: UInt32, mask: UInt32)] {
         var head: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&head) == 0, let first = head else { return [] }
@@ -31,7 +36,7 @@ enum LANRoute {
                   let address = entry.ifa_addr, address.pointee.sa_family == UInt8(AF_INET), let mask = entry.ifa_netmask else { continue }
             let ip = address.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { UInt32(bigEndian: $0.pointee.sin_addr.s_addr) }
             let netmask = mask.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { UInt32(bigEndian: $0.pointee.sin_addr.s_addr) }
-            guard !isPublic(string(ip)) else { continue }
+            guard isPrivate(ip) else { continue }
             output.append((ip, netmask))
         }
         return output
@@ -53,72 +58,94 @@ enum LANRoute {
         [(value >> 24) & 255, (value >> 16) & 255, (value >> 8) & 255, value & 255].map(String.init).joined(separator: ".")
     }
 
-    /// Hosts on the local network accepting TCP on `port`, found with non-blocking connects polled together
-    /// in batches on a background thread. `excluding` drops our own listener when the port is ours.
-    static func scan(port: UInt16, excluding: Set<String> = [], timeoutMilliseconds: Int32 = 500) async -> [String] {
+    /// Sockets open at once. Shares the process descriptor limit with every peer connection, so it stays small.
+    static let concurrency = 64
+
+    /// Hosts on the local network accepting TCP on `port`, on a background thread. `excluding` drops our own
+    /// listener when the port is ours.
+    static func scan(port: UInt16, excluding: Set<String> = [], timeoutMilliseconds: Int = 250) async -> [String] {
         let hosts = candidates(networks: localNetworks()).map(string).filter { !excluding.contains($0) }
         return await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
-                var found: [String] = []
-                for start in stride(from: 0, to: hosts.count, by: 256) {
-                    found += probe(Array(hosts[start..<min(hosts.count, start + 256)]), port: port, timeoutMilliseconds: timeoutMilliseconds)
-                }
-                continuation.resume(returning: found.sorted())
+                continuation.resume(returning: probe(hosts, port: port, timeoutMilliseconds: timeoutMilliseconds).sorted())
             }
         }
     }
 
-    /// Starts a non-blocking connect to every host, then polls them all until each settles or time runs out.
-    /// Sockets only detect listeners and are closed right away.
-    static func probe(_ hosts: [String], port: UInt16, timeoutMilliseconds: Int32) -> [String] {
-        var pending: [(fd: Int32, host: String)] = [], found: [String] = []
-        defer { for item in pending { close(item.fd) } }
-        for host in hosts {
-            let fd = socket(AF_INET, SOCK_STREAM, 0)
-            guard fd >= 0 else { continue }
-            _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
-            var noSigPipe: Int32 = 1
-            setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
-            var address = sockaddr_in()
-            address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size); address.sin_family = sa_family_t(AF_INET)
-            address.sin_port = port.bigEndian
-            guard inet_pton(AF_INET, host, &address.sin_addr) == 1 else { close(fd); continue }
-            let started = withUnsafePointer(to: &address) {
-                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+    /// A sliding window of non-blocking connects: at most `concurrency` sockets open, each given its own
+    /// timeout, the next host started as soon as one settles. Silent addresses cost one timeout each in
+    /// parallel, so a /24 takes about a second. Sockets only detect listeners and are closed right away.
+    static func probe(_ hosts: [String], port: UInt16, timeoutMilliseconds: Int) -> [String] {
+        var queue = hosts.makeIterator(), open: [(fd: Int32, host: String, deadline: Date)] = [], found: [String] = []
+        defer { for item in open { close(item.fd) } }
+        func start() {
+            while open.count < concurrency, let host = queue.next() {
+                let fd = socket(AF_INET, SOCK_STREAM, 0)
+                guard fd >= 0 else { return }
+                _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
+                var noSigPipe: Int32 = 1
+                setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
+                var address = sockaddr_in()
+                address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size); address.sin_family = sa_family_t(AF_INET)
+                address.sin_port = port.bigEndian
+                guard inet_pton(AF_INET, host, &address.sin_addr) == 1 else { close(fd); continue }
+                let started = withUnsafePointer(to: &address) {
+                    $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+                }
+                if started == 0 { found.append(host); close(fd) }
+                else if errno == EINPROGRESS { open.append((fd, host, Date().addingTimeInterval(Double(timeoutMilliseconds) / 1000))) }
+                else { close(fd) }
             }
-            if started == 0 { found.append(host); close(fd) }
-            else if errno == EINPROGRESS { pending.append((fd, host)) }
-            else { close(fd) }
         }
-        let deadline = Date().addingTimeInterval(Double(timeoutMilliseconds) / 1000)
-        while !pending.isEmpty {
-            let remaining = Int32(deadline.timeIntervalSinceNow * 1000)
-            guard remaining > 0 else { break }
-            var polls = pending.map { pollfd(fd: $0.fd, events: Int16(POLLOUT), revents: 0) }
-            guard poll(&polls, nfds_t(polls.count), remaining) > 0 else { break }
-            var still: [(fd: Int32, host: String)] = []
-            for (index, item) in pending.enumerated() {
-                guard polls[index].revents != 0 else { still.append(item); continue }
-                var failure: Int32 = 0; var length = socklen_t(MemoryLayout<Int32>.size)
-                if getsockopt(item.fd, SOL_SOCKET, SO_ERROR, &failure, &length) == 0, failure == 0 { found.append(item.host) }
-                close(item.fd)
+        start()
+        while !open.isEmpty {
+            let wait = max(1, Int32((open.map(\.deadline).min()!.timeIntervalSinceNow) * 1000))
+            var polls = open.map { pollfd(fd: $0.fd, events: Int16(POLLOUT), revents: 0) }
+            _ = poll(&polls, nfds_t(polls.count), wait)
+            let now = Date()
+            var still: [(fd: Int32, host: String, deadline: Date)] = []
+            for (index, item) in open.enumerated() {
+                if polls[index].revents != 0 {
+                    var failure: Int32 = 0; var length = socklen_t(MemoryLayout<Int32>.size)
+                    if getsockopt(item.fd, SOL_SOCKET, SO_ERROR, &failure, &length) == 0, failure == 0 { found.append(item.host) }
+                    close(item.fd)
+                } else if item.deadline <= now { close(item.fd) }
+                else { still.append(item) }
             }
-            pending = still
+            open = still
+            start()
         }
         return found
     }
 }
 
 extension SoulseekSession {
+    /// Apps start with a soft limit of 256 open files, shared by every peer, transfer and the share watcher.
+    /// A busy P2P client needs more, as other Soulseek clients also ensure. Raised once at launch, never lowered.
+    public static func raiseDescriptorLimit(to wanted: rlim_t = 4096) {
+        var limit = rlimit()
+        guard getrlimit(RLIMIT_NOFILE, &limit) == 0, limit.rlim_cur < wanted else { return }
+        limit.rlim_cur = min(wanted, limit.rlim_max)
+        _ = setrlimit(RLIMIT_NOFILE, &limit)
+    }
+
     /// Where to dial a peer the server placed at `host`. Peers at our own public address are looked up on the
-    /// local network; everyone else, and peers we cannot find locally, keep the server's address.
+    /// local network; everyone else, and peers we cannot find locally, keep the server's address. Concurrent
+    /// dials to the same port share one scan.
     func route(user: String, host: String, port: UInt16) async -> String {
         guard let publicAddress, host == publicAddress, LANRoute.isPublic(host) else { return host }
         if let cached = lanHosts[user], cached.port == port { return cached.host }
         if let miss = lanMisses[user], miss.port == port, miss.date.timeIntervalSinceNow > -60 { return host }
-        let ownPort = listener?.port?.rawValue
-        let own = Set(LANRoute.localNetworks().map { LANRoute.string($0.address) })
-        let found = await LANRoute.scan(port: port, excluding: port == ownPort ? own : [])
+        let found: [String]
+        if let running = lanScans[port] { found = await running.value }
+        else {
+            let excluded = port == listener?.port?.rawValue ? Set(LANRoute.localNetworks().map { LANRoute.string($0.address) }) : []
+            let scan = Task { await LANRoute.scan(port: port, excluding: excluded) }
+            lanScans[port] = scan
+            found = await scan.value
+            lanScans[port] = nil
+        }
+        if let cached = lanHosts[user], cached.port == port { return cached.host }
         guard let local = found.first else {
             lanMisses[user] = (port, Date())
             await report("\(user) shares your public address but wasn’t found on the local network.")
