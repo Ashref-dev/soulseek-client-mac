@@ -31,6 +31,10 @@ public actor SoulseekSession {
     var activeSearches: Set<UInt32> = []
     var expectedUserInfo: Set<String> = []
     var username = ""
+    /// Our address as the server sees it, from the login reply.
+    var publicAddress: String?
+    var lanHosts: [String: (host: String, port: UInt16)] = [:]
+    var lanMisses: [String: (port: UInt16, date: Date)] = [:]
     var token: UInt32 = UInt32.random(in: 1000...UInt32.max / 2)
     let logger = Logger(subsystem: "tn.ashref.arpeggio", category: "Protocol")
     public init() {
@@ -99,6 +103,7 @@ public actor SoulseekSession {
                 }
                 throw LoginRejected(message: message)
             }
+            if reader.remaining >= 4 { publicAddress = Self.ipString(try reader.uint()) }
             var wait = WireWriter(); wait.uint(UInt32(listeningPort))
             try await connection.send(code: 2, payload: wait.data)
             try requireGeneration(attempt)
@@ -147,7 +152,7 @@ public actor SoulseekSession {
         expectedFolders.removeAll()
         for peer in peers.values { peer.socket.cancel() }
         for task in peerTasks.values { task.cancel() }
-        peers.removeAll(); peerDirections.removeAll(); peerTasks.removeAll(); pending.removeAll(); connecting.removeAll(); rendezvous.removeAll(); addresses.removeAll()
+        peers.removeAll(); peerDirections.removeAll(); peerTasks.removeAll(); pending.removeAll(); connecting.removeAll(); rendezvous.removeAll(); addresses.removeAll(); lanHosts.removeAll(); lanMisses.removeAll(); publicAddress = nil
         for waiters in addressWaiters.values { for waiter in waiters { waiter.resume(throwing: ProtocolError.disconnected) } }
         addressWaiters.removeAll()
         for waiter in fileWaiters.values { waiter.resume(throwing: ProtocolError.disconnected) }
@@ -219,7 +224,8 @@ public actor SoulseekSession {
             Task {
                 do {
                     let address = try await self.address(for: user)
-                    let socket = try TCPConnection(host: address.0, port: address.1)
+                    let host = await self.route(user: user, host: address.0, port: address.1)
+                    let socket = try TCPConnection(host: host, port: address.1)
                     do {
                         try await socket.start()
                         let direct = FramedConnection(socket)

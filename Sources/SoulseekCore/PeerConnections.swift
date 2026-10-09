@@ -69,7 +69,9 @@ extension SoulseekSession {
         guard peerDials.count < 32, peerDials.insert(dial).inserted else { return }
         defer { peerDials.remove(dial); peerDialSockets.removeValue(forKey: dial) }
         do {
-            let socket = try TCPConnection(host: host, port: port)
+            let target = await route(user: user, host: host, port: port)
+            try requireGeneration(attempt)
+            let socket = try TCPConnection(host: target, port: port)
             peerDialSockets[dial] = socket
             do {
                 try await socket.start()
