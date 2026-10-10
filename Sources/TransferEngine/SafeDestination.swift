@@ -105,8 +105,16 @@ public enum SafeDestination {
         try ensureDirectory(directory)
         let target = available(destination)
         try FileManager.default.moveItem(at: source, to: target)
+        quarantine(target)
         removeIncompleteFolderIfEmpty(source.deletingLastPathComponent())
         return target
+    }
+
+    /// Marks a file from another person the way browsers do, so Gatekeeper checks it if it turns out to be an
+    /// app or script. Media opens as usual. Volumes without extended attributes simply keep the file unmarked.
+    static func quarantine(_ file: URL) {
+        let value = String(format: "0081;%08x;Soulseek-Arpeggio;", UInt32(clamping: Int(Date().timeIntervalSince1970)))
+        _ = value.withCString { setxattr(file.path, "com.apple.quarantine", $0, strlen($0), 0, 0) }
     }
 
     /// Removes an Incomplete folder holding nothing but Finder's .DS_Store. rmdir refuses non-empty folders,

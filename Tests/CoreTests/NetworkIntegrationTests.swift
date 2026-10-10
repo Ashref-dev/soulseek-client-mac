@@ -84,6 +84,7 @@ func partialDownloadResumesAfterRelaunch() async throws {
     try await waitUntil("resumed download", details: { "\(restored.transfers.map { ($0.status.rawValue, $0.error ?? "") })" }) { restored.transfers.contains { $0.status == .completed } }
     let complete = try #require(restored.transfers.first { $0.status == .completed })
     #expect(try Data(contentsOf: URL(fileURLWithPath: try #require(complete.destination))) == bytes)
+    #expect(quarantineFlag(URL(fileURLWithPath: try #require(complete.destination))) != nil)
     #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("downloads/Incomplete").path))
     await restored.shutdown(); await sender.shutdown(); await fixture.stop()
 }

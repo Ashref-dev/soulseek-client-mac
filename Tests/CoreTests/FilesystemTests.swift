@@ -68,6 +68,13 @@ import ShareIndexer
     _ = try SafeDestination.publish(secondPartial, to: second)
     #expect(!FileManager.default.fileExists(atPath: incomplete.path))
     #expect(try Data(contentsOf: first) == Data("one".utf8))
+    #expect(quarantineFlag(first)?.hasPrefix("0081;") == true, "finished downloads carry the browser-style quarantine")
+}
+
+func quarantineFlag(_ file: URL) -> String? {
+    var buffer = [CChar](repeating: 0, count: 256)
+    let length = getxattr(file.path, "com.apple.quarantine", &buffer, buffer.count - 1, 0, 0)
+    return length > 0 ? String(cString: buffer) : nil
 }
 
 @Test func restoreMovesLegacyHiddenPartialsIntoIncompleteFolder() async throws {
