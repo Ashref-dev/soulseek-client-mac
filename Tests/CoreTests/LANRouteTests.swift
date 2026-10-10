@@ -11,6 +11,13 @@ import Testing
         }
     }
 
+    /// Two listeners on the port could be anyone; only a single answer is used.
+    @Test func onlyASingleLocalAnswerIsTrusted() {
+        #expect(LANRoute.unambiguous(["192.168.1.20"]) == "192.168.1.20")
+        #expect(LANRoute.unambiguous([]) == nil)
+        #expect(LANRoute.unambiguous(["192.168.1.20", "192.168.1.31"]) == nil)
+    }
+
     @Test func candidatesCoverTheSubnetButStopAtASlash22() {
         let home = LANRoute.candidates(networks: [(0xC0A8_01A7, 0xFFFF_FF00)])
         #expect(home.count == 254)

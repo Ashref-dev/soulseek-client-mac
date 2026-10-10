@@ -54,6 +54,10 @@ enum LANRoute {
         return output
     }
 
+    /// The only host that answered, or nil. Soulseek peers don't prove their name on a direct connection, so
+    /// with two listeners on the port we can't know which is the person we want and must not guess.
+    static func unambiguous(_ found: [String]) -> String? { found.count == 1 ? found[0] : nil }
+
     static func string(_ value: UInt32) -> String {
         [(value >> 24) & 255, (value >> 16) & 255, (value >> 8) & 255, value & 255].map(String.init).joined(separator: ".")
     }
@@ -146,9 +150,10 @@ extension SoulseekSession {
             lanScans[port] = nil
         }
         if let cached = lanHosts[user], cached.port == port { return cached.host }
-        guard let local = found.first else {
+        guard let local = LANRoute.unambiguous(found) else {
             lanMisses[user] = (port, Date())
-            await report("\(user) shares your public address but wasn’t found on the local network.")
+            await report(found.isEmpty ? "\(user) shares your public address but wasn’t found on the local network."
+                                       : "\(user) shares your public address, but \(found.count) computers on the local network use that port, so Arpeggio can’t tell which one is them.")
             return host
         }
         lanHosts[user] = (local, port)
