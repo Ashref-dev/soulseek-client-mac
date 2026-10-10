@@ -6,6 +6,11 @@ struct ProjectionKey: Equatable {
     let token: UInt32?
     let filters: ResultFilters
     let sort: [KeyPathComparator<SearchResult>]
+
+    /// The same search ended, by hand or by the idle timeout, with filters and order unchanged.
+    static func searchStopped(from old: ProjectionKey, to new: ProjectionKey) -> Bool {
+        old.token != nil && new.token == nil && old.filters == new.filters && old.sort == new.sort
+    }
 }
 
 /// One immutable snapshot of results with the filters and order to apply.

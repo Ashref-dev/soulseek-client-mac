@@ -68,6 +68,9 @@ struct SearchView: View {
         }
         .onChange(of: model.results.isEmpty) { _, empty in if empty { resetOutline() } }
         .onChange(of: ProjectionKey(token: model.searchToken, filters: filters, sort: sortOrder), initial: true) { old, new in
+            // A search that stops keeps its results: rebuilding the outline would empty the list for a frame
+            // and throw the reader back up. Only a new search, a filter or a sort order starts over.
+            if ProjectionKey.searchStopped(from: old, to: new) { submitResults(); return }
             restartPreparation(clear: old.token != new.token)
         }
         .onChange(of: model.results.count) { submitResults() }
